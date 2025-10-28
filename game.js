@@ -2362,16 +2362,59 @@ class TowerDefenseGame {
     }
     
     saveGame(slot = null) {
-        if (!this.isGameStarted) {
-            this.showMessage('No game to save!', '#ff4444');
-            return;
-        }
-        
         // If slot is provided, use it; otherwise use current slot
         const saveSlot = slot !== null ? slot : this.currentSlot;
         
         const playerName = localStorage.getItem('playerName') || 'Player';
         
+        // Check if there's an active game or if we need to create a default save
+        if (!this.isGameStarted) {
+            // Check if there's existing save data to preserve
+            const existingSave = localStorage.getItem(`teslaTowerSave_slot${saveSlot}`);
+            if (!existingSave) {
+                // Create a new save with default starting values
+                const saveData = {
+                    playerName: playerName,
+                    wave: 1,
+                    kills: 0,
+                    gold: 100,
+                    tower: {
+                        health: this.tower.health,
+                        maxHealth: this.tower.maxHealth,
+                        level: 1,
+                        damage: this.tower.damage,
+                        range: this.tower.range,
+                        fireRate: 1000,
+                        maxTargets: 1,
+                        chainLightning: 0,
+                        shield: 0,
+                        maxShield: 0
+                    },
+                    clickDamage: this.clickDamage,
+                    upgradeCosts: { 
+                        damage: 100, 
+                        range: 80, 
+                        fireRate: 120, 
+                        health: 50, 
+                        targets: 150, 
+                        clickDamage: 80, 
+                        chainLightning: 200, 
+                        shield: 150 
+                    },
+                    zombiesPerWave: 5,
+                    spawnRate: 2000,
+                    timestamp: Date.now()
+                };
+                localStorage.setItem(`teslaTowerSave_slot${saveSlot}`, JSON.stringify(saveData));
+                this.showMessage(`New save created in Slot ${saveSlot}! ✓`, '#00ff00');
+            } else {
+                this.showMessage('Slot already has a save. Start a game to update it.', '#ffaa00');
+            }
+            this.updateSaveSlotInfo();
+            return;
+        }
+        
+        // Save active game state
         const saveData = {
             playerName: playerName,
             wave: this.wave,
@@ -2397,7 +2440,7 @@ class TowerDefenseGame {
         };
         
         localStorage.setItem(`teslaTowerSave_slot${saveSlot}`, JSON.stringify(saveData));
-        this.showMessage(`Game Saved! ✓`, '#00ff00');
+        this.showMessage(`Game Saved to Slot ${saveSlot}! ✓`, '#00ff00');
         this.updateSaveSlotInfo();
     }
     
