@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tesla Tower">
+  <defs>
+    <radialGradient id="g" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#00ffff"/>
+      <stop offset="70%" stop-color="#0088ff"/>
+      <stop offset="100%" stop-color="#0a0a1a"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="96" fill="#0a0a1a"/>
+  <circle cx="256" cy="256" r="176" fill="url(#g)" opacity="0.9"/>
+
+  <!-- Tower core -->
+  <circle cx="256" cy="256" r="70" fill="#00ffff" filter="url(#glow)"/>
+  <circle cx="256" cy="256" r="44" fill="#ffffff" opacity="0.85"/>
+
+  <!-- Lightning bolt -->
+  <path d="M286 122 L206 292 H256 L226 390 L324 226 H270 Z" fill="#ffff00" stroke="#ffffff" stroke-width="10" stroke-linejoin="round" filter="url(#glow)"/>
+</svg>

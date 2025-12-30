@@ -1,4 +1,4 @@
-# ⚡ Tesla Tower Defense
+# ⚡ Tesla Tower
 
 A browser-based tower defense game where you defend your Tesla Tower from endless waves of zombies using lightning attacks!
 

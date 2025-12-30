@@ -1,5 +1,5 @@
 // ==========================================
-// TESLA TOWER DEFENSE GAME
+// TESLA TOWER GAME
 // VERSION: Save Slots Update v1.0
 // ==========================================
 
@@ -7,6 +7,31 @@ class TowerDefenseGame {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = this.canvas.getContext('2d');
+
+        // Canvas scaling (retina/HiDPI)
+        this.dpr = 1;
+        this.width = 0;  // logical (CSS pixel) width
+        this.height = 0; // logical (CSS pixel) height
+        
+        // Mobile detection and optimization
+        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        this.baseMaxParticles = this.isMobile ? 50 : 200;
+        this.baseMaxLightning = this.isMobile ? 5 : 20;
+        this.maxParticles = this.baseMaxParticles;
+        this.maxLightning = this.baseMaxLightning;
+        this.hapticEnabled = this.isMobile && 'vibrate' in navigator;
+
+        // Throttle DOM/UI updates (reduce layout work)
+        this.uiLastUpdate = 0;
+        this.uiUpdateInterval = 100; // ms
+
+        // Timing accumulators
+        this.spawnAccumulator = 0;
+
+        // Screen shake
+        this.shakeTime = 0;
+        this.shakeDuration = 0;
+        this.shakeIntensity = 0;
         
         // Current save slot (default to slot 1)
         this.currentSlot = parseInt(localStorage.getItem('currentSlot')) || 1;
@@ -67,6 +92,7 @@ class TowerDefenseGame {
         this.isMouseDown = false;
         this.lastClickTime = 0;
         this.clickFireRate = 150; // Random strike spawn rate (150ms)
+        this.clickStrikeRadius = 50; // Random strike radius (px) around cursor
         this.clickBeams = []; // Store multiple random strikes
         
         // Set canvas size (must be after tower is created)
@@ -99,6 +125,7 @@ class TowerDefenseGame {
         this.goldCoins = []; // Flying gold coins effect
         this.towerSparks = []; // Electric sparks from tower
         this.impactParticles = []; // Impact burst effects
+        this.explosionRings = []; // Explosion shockwave rings (radius indicators)
         
         // Daily Challenges
         this.loadDailyChallenges();
@@ -120,6 +147,9 @@ class TowerDefenseGame {
         this.bossSpawned = false; // Track if boss spawned this wave
         this.currentWaveTheme = null; // Theme for current wave (null = mixed, or specific type)
         this.splitBossSpawned = false; // Track if split boss spawned
+
+        // Elite system (one elite per non-boss wave)
+        this.eliteSpawnedThisWave = false;
         
         // Narration tracking
         this.criticalHealthWarned = false;
@@ -127,6 +157,41 @@ class TowerDefenseGame {
         
         // Load settings
         this.loadSettings();
+
+        // Run meta systems (choices, objectives, abilities, status effects)
+        this.runObjective = null;
+        this.runCurses = [];
+        this.waveChoiceState = { active: false, options: [], waveOffered: 0 };
+        this.statusConfig = {
+            slowChance: 0,
+            slowFactor: 0.65,
+            slowDurationMs: 1400,
+            shockChance: 0,
+            shockDps: 0,
+            shockDurationMs: 1600
+        };
+        this.abilities = {
+            emp: { unlocked: false, cooldownMs: 20000, lastUsedAt: -Infinity },
+            overcharge: { unlocked: false, cooldownMs: 30000, lastUsedAt: -Infinity, activeUntil: 0, durationMs: 8000 }
+        };
+        this.baseAbilityCooldowns = { emp: 20000, overcharge: 30000 };
+        this.hitPauseTime = 0;
+
+        // Relics (Archero-style run identity + Tower-style meta)
+        this.relicDropState = { active: false, waveOffered: 0, options: [] };
+        this.relicDropOpenedAt = 0;
+
+        // Background hum/music
+        this.masterGain = null;
+        this.musicOsc = null;
+        this.musicGain = null;
+        
+        // Handle page visibility for battery saving
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && this.isGameStarted && !this.isGameOver) {
+                this.isPaused = true;
+            }
+        });
         
         this.init();
     }
@@ -139,12 +204,25 @@ class TowerDefenseGame {
         const vw = window.innerWidth || document.documentElement.clientWidth;
         const vh = window.innerHeight || document.documentElement.clientHeight;
         
-        this.canvas.width = vw;
-        this.canvas.height = vh - headerHeight;
-        
-        // Update tower position to center
-        this.tower.x = this.canvas.width / 2;
-        this.tower.y = this.canvas.height / 2;
+        // Logical size (CSS pixels)
+        this.width = vw;
+        this.height = Math.max(0, vh - headerHeight);
+
+        // Physical buffer size (device pixels)
+        const maxDpr = this.isMobile ? 2 : 2;
+        this.dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+
+        this.canvas.style.width = `${this.width}px`;
+        this.canvas.style.height = `${this.height}px`;
+        this.canvas.width = Math.floor(this.width * this.dpr);
+        this.canvas.height = Math.floor(this.height * this.dpr);
+
+        // Draw using logical coordinates
+        this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+        // Update tower position to center (logical coords)
+        this.tower.x = this.width / 2;
+        this.tower.y = this.height / 2;
     }
     
     init() {
@@ -153,12 +231,34 @@ class TowerDefenseGame {
         
         // Apply current theme
         this.applyTheme();
+
+        this.cacheUIElements();
         
         this.setupEventListeners();
         this.setupBackdropCloseListeners();
         this.setupTitleScreen();
         this.updateUI();
         this.gameLoop();
+    }
+
+    cacheUIElements() {
+        this.ui = {
+            wave: document.getElementById('wave'),
+            kills: document.getElementById('kills'),
+            gold: document.getElementById('gold'),
+            towerHealth: document.getElementById('towerHealth'),
+            runObjectiveText: document.getElementById('runObjectiveText'),
+            currentPlayerName: document.getElementById('currentPlayerName'),
+            gemsAmount: document.getElementById('gemsAmount'),
+            soundToggle: document.getElementById('soundToggle'),
+            abilitiesBar: document.getElementById('abilitiesBar'),
+            abilityEmpBtn: document.getElementById('abilityEmpBtn'),
+            abilityOverchargeBtn: document.getElementById('abilityOverchargeBtn'),
+            waveChoiceBackdrop: document.getElementById('waveChoiceBackdrop'),
+            waveChoicePanel: document.getElementById('waveChoicePanel'),
+            waveChoiceOptions: document.getElementById('waveChoiceOptions'),
+            waveChoiceSubtitle: document.getElementById('waveChoiceSubtitle')
+        };
     }
     
     setupTitleScreen() {
@@ -190,7 +290,9 @@ class TowerDefenseGame {
             { id: 'enemyTypesPanel', backdropId: 'enemyTypesBackdrop', closeMethod: () => this.closeEnemyTypesPanel() },
             { id: 'challengesPanel', backdropId: 'challengesBackdrop', closeMethod: () => this.closeChallengesPanel() },
             { id: 'leaderboardsPanel', backdropId: 'leaderboardsBackdrop', closeMethod: () => this.closeLeaderboardsPanel() },
-            { id: 'settingsPanel', backdropId: 'settingsBackdrop', closeMethod: () => this.closeSettingsPanel() }
+            { id: 'settingsPanel', backdropId: 'settingsBackdrop', closeMethod: () => this.closeSettingsPanel() },
+            { id: 'relicsPanel', backdropId: 'relicsBackdrop', closeMethod: () => this.closeRelicsPanel() },
+            { id: 'relicDropPanel', backdropId: 'relicDropBackdrop', closeMethod: () => this.closeRelicDropPanel() }
         ];
         
         panels.forEach(panel => {
@@ -251,6 +353,13 @@ class TowerDefenseGame {
         document.getElementById('startBtn').addEventListener('click', () => {
             this.startGame();
         });
+
+        // Ability buttons
+        const empBtn = document.getElementById('abilityEmpBtn');
+        if (empBtn) empBtn.addEventListener('click', () => this.tryUseAbility('emp'));
+
+        const overBtn = document.getElementById('abilityOverchargeBtn');
+        if (overBtn) overBtn.addEventListener('click', () => this.tryUseAbility('overcharge'));
         
         // Permanent upgrade purchase buttons (now in gem shop)
         document.getElementById('buyPermDamage').addEventListener('click', () => {
@@ -339,6 +448,16 @@ class TowerDefenseGame {
         document.getElementById('themesBtn').addEventListener('click', () => {
             this.openThemesPanel();
         });
+
+        // Relics button
+        const relicsBtn = document.getElementById('relicsBtn');
+        if (relicsBtn) relicsBtn.addEventListener('click', () => this.openRelicsPanel());
+
+        const closeRelics = document.getElementById('closeRelics');
+        if (closeRelics) closeRelics.addEventListener('click', () => this.closeRelicsPanel());
+
+        const closeRelicDrop = document.getElementById('closeRelicDrop');
+        if (closeRelicDrop) closeRelicDrop.addEventListener('click', () => this.closeRelicDropPanel());
         
         document.getElementById('closeThemes').addEventListener('click', () => {
             this.closeThemesPanel();
@@ -405,12 +524,15 @@ class TowerDefenseGame {
             btn.classList.toggle('off');
             btn.textContent = btn.classList.contains('off') ? 'OFF' : 'ON';
         });
-        
-        document.getElementById('voiceToggleBtn').addEventListener('click', (e) => {
-            const btn = e.target;
-            btn.classList.toggle('off');
-            btn.textContent = btn.classList.contains('off') ? 'OFF' : 'ON';
-        });
+
+        const musicToggle = document.getElementById('musicToggleBtn');
+        if (musicToggle) {
+            musicToggle.addEventListener('click', (e) => {
+                const btn = e.target;
+                btn.classList.toggle('off');
+                btn.textContent = btn.classList.contains('off') ? 'OFF' : 'ON';
+            });
+        }
         
         document.getElementById('particlesToggleBtn').addEventListener('click', (e) => {
             const btn = e.target;
@@ -508,54 +630,32 @@ class TowerDefenseGame {
             });
         });
         
-        // Canvas mouse events for shooting
-        this.canvas.addEventListener('mousedown', (e) => {
+        // Unified pointer events for better mobile support
+        this.canvas.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
             this.isMouseDown = true;
             this.currentMouseX = e.clientX;
             this.currentMouseY = e.clientY;
-            this.handleCanvasClick(e); // Fire immediately on click
+            this.handleCanvasClick(e);
         });
         
-        this.canvas.addEventListener('mouseup', () => {
+        this.canvas.addEventListener('pointerup', () => {
             this.isMouseDown = false;
         });
         
-        this.canvas.addEventListener('mouseleave', () => {
+        this.canvas.addEventListener('pointerleave', () => {
             this.isMouseDown = false;
         });
         
-        this.canvas.addEventListener('mousemove', (e) => {
+        this.canvas.addEventListener('pointermove', (e) => {
             if (this.isMouseDown) {
                 this.currentMouseX = e.clientX;
                 this.currentMouseY = e.clientY;
             }
         });
         
-        // Canvas touch events for shooting
-        this.canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this.isMouseDown = true;
-            const touch = e.touches[0];
-            this.currentMouseX = touch.clientX;
-            this.currentMouseY = touch.clientY;
-            const clickEvent = {
-                clientX: touch.clientX,
-                clientY: touch.clientY
-            };
-            this.handleCanvasClick(clickEvent);
-        });
-        
-        this.canvas.addEventListener('touchend', () => {
+        this.canvas.addEventListener('pointercancel', () => {
             this.isMouseDown = false;
-        });
-        
-        this.canvas.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            if (this.isMouseDown && e.touches.length > 0) {
-                const touch = e.touches[0];
-                this.currentMouseX = touch.clientX;
-                this.currentMouseY = touch.clientY;
-            }
         });
         
         // Restart button
@@ -681,6 +781,7 @@ class TowerDefenseGame {
         this.isGameStarted = true;
         this.isGameOver = false; // Reset game over flag
         this.isPaused = false; // Reset pause flag
+        this.spawnAccumulator = 0;
         this.lastSpawn = performance.now(); // Initialize spawn timer
         this.runStartTime = Date.now(); // Start run timer
         this.criticalHealthWarned = false; // Reset health warning
@@ -709,6 +810,28 @@ class TowerDefenseGame {
         // Show speed control button
         document.getElementById('speedToggle').classList.add('active');
         this.updateSpeedButton();
+
+        // Show abilities bar (buttons enable once unlocked)
+        if (!this.ui) this.cacheUIElements();
+        this.ui.abilitiesBar && this.ui.abilitiesBar.classList.add('active');
+
+        // Reset run meta systems
+        this.runCurses = [];
+        this.statusConfig.slowChance = 0;
+        this.statusConfig.shockChance = 0;
+        this.statusConfig.shockDps = 0;
+        this.abilities.emp.unlocked = false;
+        this.abilities.overcharge.unlocked = false;
+        this.abilities.emp.lastUsedAt = -Infinity;
+        this.abilities.overcharge.lastUsedAt = -Infinity;
+        this.abilities.overcharge.activeUntil = 0;
+        this.waveChoiceState = { active: false, options: [], waveOffered: 0 };
+        this.hitPauseTime = 0;
+
+        // New objective for the run
+        this.generateRunObjective();
+        this.updateAbilityUI(performance.now(), true);
+        this.updateUI();
         
         this.lastFrameTime = performance.now();
     }
@@ -767,6 +890,7 @@ class TowerDefenseGame {
         this.goldCoins = [];
         this.towerSparks = [];
         this.impactParticles = [];
+        this.explosionRings = [];
         this.zombiesSpawned = 0;
         this.spawnRate = 2000;
         this.bossSpawned = false;
@@ -831,7 +955,7 @@ class TowerDefenseGame {
         document.getElementById('gameOver').classList.remove('active');
         
         // Clear the canvas
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.clearRect(0, 0, this.width, this.height);
         
         // Update UI
         this.updateUI();
@@ -849,7 +973,7 @@ class TowerDefenseGame {
         const y = e.clientY - rect.top;
         
         // Create a random lightning strike near the cursor
-        const randomOffset = 50; // Strikes appear within 50px of cursor
+        const randomOffset = Math.max(8, Number(this.clickStrikeRadius ?? 50));
         const strikeX = x + (Math.random() - 0.5) * randomOffset * 2;
         const strikeY = y + (Math.random() - 0.5) * randomOffset * 2;
         
@@ -880,6 +1004,11 @@ class TowerDefenseGame {
         // Create small yellow splash at strike location
         this.createParticles(strikeX, strikeY, '#ffff00', 3);
         
+        // Clean up old lightning effects to prevent buildup on mobile
+        if (this.lightning.length > this.maxLightning) {
+            this.lightning = this.lightning.slice(-this.maxLightning);
+        }
+        
         // Check if strike hit any zombie and deal damage
         let hitZombie = false;
         for (let i = this.zombies.length - 1; i >= 0; i--) {
@@ -890,8 +1019,8 @@ class TowerDefenseGame {
             
             // Check if strike is within zombie radius (30px for random strikes)
             if (distance <= 30) {
-                // Deal click damage
-                zombie.health -= this.clickDamage;
+                // Deal click damage (accounts for armored/phasing)
+                const actualDamage = this.dealDamageToZombie(zombie, this.clickDamage);
                 
                 // Track if killed by click
                 if (zombie.health <= 0) {
@@ -899,16 +1028,25 @@ class TowerDefenseGame {
                 }
                 
                 // Track damage dealt
-                this.sessionDamage += this.clickDamage;
+                this.sessionDamage += actualDamage;
                 
                 // Create floating damage number
-                this.createDamageNumber(zombie.x, zombie.y - 20, this.clickDamage);
+                if (actualDamage > 0) {
+                    this.createDamageNumber(zombie.x, zombie.y - 20, actualDamage);
+                } else {
+                    this.createParticles(zombie.x, zombie.y, 'rgba(200, 200, 255, 0.55)', 2);
+                }
                 
                 // Create red blood splash at zombie location
                 this.createParticles(zombie.x, zombie.y, '#ff0000', 4);
                 
                 // Play hit sound
                 this.playSound('zombieHit');
+                
+                // Haptic feedback on hit
+                if (this.hapticEnabled) {
+                    navigator.vibrate(10);
+                }
                 
                 hitZombie = true;
                 
@@ -992,6 +1130,11 @@ class TowerDefenseGame {
         this.updateUpgradePanel();
         this.playSound('upgrade');
         this.showMessage('Upgrade purchased!', '#00ffff');
+        
+        // Haptic feedback
+        if (this.hapticEnabled) {
+            navigator.vibrate(20);
+        }
     }
     
     updateUpgradePanel() {
@@ -1058,30 +1201,24 @@ class TowerDefenseGame {
         
         switch(side) {
             case 0: // top
-                x = Math.random() * this.canvas.width;
+                x = Math.random() * this.width;
                 y = -50;
                 break;
             case 1: // right
-                x = this.canvas.width + 50;
-                y = Math.random() * this.canvas.height;
+                x = this.width + 50;
+                y = Math.random() * this.height;
                 break;
             case 2: // bottom
-                x = Math.random() * this.canvas.width;
-                y = this.canvas.height + 50;
+                x = Math.random() * this.width;
+                y = this.height + 50;
                 break;
             case 3: // left
                 x = -50;
-                y = Math.random() * this.canvas.height;
+                y = Math.random() * this.height;
                 break;
         }
         
         let zombie;
-        let isElite = false;
-        
-        // Check for elite zombie spawn (10% chance starting at wave 10)
-        if (this.wave >= 10 && Math.random() < 0.1 && !spawnBoss && !spawnSplitBoss) {
-            isElite = true;
-        }
         
         if (spawnSplitBoss) {
             // Split Boss Zombie - Splits into 2 mini-bosses on death!
@@ -1278,21 +1415,24 @@ class TowerDefenseGame {
                     };
                     break;
             }
-            
-            // Apply ELITE modifications if this is an elite zombie
-            if (isElite) {
-                zombie.isElite = true;
-                zombie.health *= 2; // 2x health
-                zombie.maxHealth *= 2;
-                zombie.damage = Math.floor(zombie.damage * 1.5); // 1.5x damage
-                zombie.goldValue *= 3; // 3x gold reward!
-                zombie.radius += 3; // Slightly larger
-                
-                // Add special glow color effect (brighter version of base color)
-                zombie.glowColor = this.brightenColor(zombie.color);
-                
-                // Add elite indicator to emoji
-                zombie.emoji = '⭐' + zombie.emoji;
+
+            // Elite spawn: at most one elite per non-boss wave
+            const isBossWave = this.wave % 5 === 0;
+            const canSpawnElite = this.wave >= 8 && !isBossWave && !this.eliteSpawnedThisWave;
+            if (canSpawnElite) {
+                const baseChance = 0.06;
+                const scalingChance = Math.min(0.10, Math.max(0, (this.wave - 8) * 0.004));
+                const eliteChance = baseChance + scalingChance;
+
+                if (Math.random() < eliteChance) {
+                    this.eliteSpawnedThisWave = true;
+                    this.applyEliteModifiers(zombie);
+                    if (zombie.eliteTitle) {
+                        const msg = `⭐ ELITE: ${zombie.eliteTitle.toUpperCase()} ⭐`;
+                        this.showMessage(msg, zombie.glowColor || '#ffff00');
+                        this.showNarration(msg, 1600);
+                    }
+                }
             }
         }
         
@@ -1313,12 +1453,173 @@ class TowerDefenseGame {
         
         return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`;
     }
+
+    pickEliteModifiers(zombie) {
+        const type = zombie?.type || 'normal';
+        const pool = [
+            { id: 'swift', label: 'Swift', weight: 2.2 },
+            { id: 'juggernaut', label: 'Juggernaut', weight: 1.9 },
+            { id: 'armored', label: 'Armored', weight: 1.7 },
+            { id: 'regenerator', label: 'Regenerator', weight: 1.5 },
+            { id: 'berserk', label: 'Berserk', weight: 1.4 },
+            { id: 'phasing', label: 'Phasing', weight: 1.1 },
+            { id: 'volatile', label: 'Volatile', weight: 1.2 }
+        ];
+
+        // Avoid stacking too much of what the base type already is
+        const filtered = pool.filter(m => {
+            if (type === 'runner' && m.id === 'swift') return false;
+            if (type === 'tank' && (m.id === 'juggernaut' || m.id === 'armored')) return false;
+            if (type === 'exploder' && m.id === 'volatile') return false;
+            return true;
+        });
+
+        const modsToPick = this.wave >= 18 ? 2 : 1;
+        const chosen = [];
+        let available = filtered.slice();
+
+        const pickOne = () => {
+            const total = available.reduce((sum, m) => sum + m.weight, 0);
+            let roll = Math.random() * total;
+            for (let i = 0; i < available.length; i++) {
+                roll -= available[i].weight;
+                if (roll <= 0) {
+                    const picked = available[i];
+                    available.splice(i, 1);
+                    return picked;
+                }
+            }
+            return available.pop();
+        };
+
+        for (let i = 0; i < modsToPick; i++) {
+            if (!available.length) break;
+            chosen.push(pickOne());
+        }
+
+        return chosen;
+    }
+
+    applyEliteModifiers(zombie) {
+        if (!zombie || zombie.isBoss) return;
+
+        zombie.isElite = true;
+        zombie.eliteMods = [];
+        zombie.eliteModLabels = [];
+        zombie.damageTakenMult = 1;
+
+        const mods = this.pickEliteModifiers(zombie);
+        const modsCount = mods.length;
+
+        // Base elite bump (kept moderate; modifiers do the identity)
+        const baseHealthMult = 1.45;
+        const baseSpeedMult = 1.05;
+        zombie.health = Math.floor(zombie.health * baseHealthMult);
+        zombie.maxHealth = Math.floor(zombie.maxHealth * baseHealthMult);
+        zombie.speed *= baseSpeedMult;
+        zombie.damage = Math.max(1, Math.floor((zombie.damage || 1) * 1.15));
+        zombie.goldValue = Math.floor((zombie.goldValue || 1) * (2.0 + 0.4 * modsCount));
+        zombie.radius += 3;
+
+        zombie.glowColor = this.brightenColor(zombie.color || '#00ff00');
+        zombie.emoji = '⭐' + (zombie.emoji || '🧟');
+
+        // Apply modifier effects
+        mods.forEach(m => {
+            zombie.eliteMods.push(m.id);
+            zombie.eliteModLabels.push(m.label);
+
+            switch (m.id) {
+                case 'swift':
+                    zombie.speed *= 1.55;
+                    break;
+                case 'juggernaut':
+                    zombie.health = Math.floor(zombie.health * 1.8);
+                    zombie.maxHealth = Math.floor(zombie.maxHealth * 1.8);
+                    zombie.speed *= 0.88;
+                    zombie.radius += 2;
+                    break;
+                case 'armored':
+                    zombie.damageTakenMult *= 0.78;
+                    break;
+                case 'regenerator':
+                    // Regen scales gently with maxHealth; ticks in update loop
+                    zombie.regenPerSec = Math.max(0.6, zombie.maxHealth * 0.006);
+                    break;
+                case 'berserk':
+                    zombie.hasBerserk = true;
+                    zombie.baseSpeed = zombie.speed;
+                    break;
+                case 'phasing':
+                    zombie.hasPhasing = true;
+                    zombie.phaseIntervalMs = 2200;
+                    zombie.phaseDurationMs = 650;
+                    zombie.nextPhaseAt = performance.now() + 900 + Math.random() * 800;
+                    zombie.phasedUntil = 0;
+                    break;
+                case 'volatile':
+                    zombie.isVolatile = true;
+                    break;
+            }
+        });
+
+        zombie.eliteTitle = zombie.eliteModLabels.join(' + ');
+    }
+
+    updateEliteBehavior(zombie, deltaTime, currentTime) {
+        if (!zombie || !zombie.isElite) return;
+
+        if (zombie.regenPerSec && zombie.health > 0 && zombie.health < zombie.maxHealth) {
+            zombie.health = Math.min(zombie.maxHealth, zombie.health + (zombie.regenPerSec * deltaTime) / 1000);
+        }
+
+        if (zombie.hasBerserk && Number.isFinite(zombie.baseSpeed)) {
+            const hpFrac = zombie.maxHealth > 0 ? (zombie.health / zombie.maxHealth) : 1;
+            zombie.speed = zombie.baseSpeed * (hpFrac < 0.4 ? 1.65 : 1.0);
+        }
+
+        if (zombie.hasPhasing) {
+            if (currentTime >= (zombie.nextPhaseAt || 0)) {
+                zombie.phasedUntil = currentTime + (zombie.phaseDurationMs || 650);
+                zombie.nextPhaseAt = currentTime + (zombie.phaseIntervalMs || 2200);
+            }
+            zombie.isPhased = currentTime < (zombie.phasedUntil || 0);
+        } else {
+            zombie.isPhased = false;
+        }
+    }
+
+    dealDamageToZombie(zombie, rawDamage) {
+        if (!zombie || rawDamage <= 0) return 0;
+        if (zombie.isPhased) return 0;
+
+        const mult = Number.isFinite(zombie.damageTakenMult) ? zombie.damageTakenMult : 1;
+        const finalDamage = Math.max(1, Math.floor(rawDamage * mult));
+        zombie.health -= finalDamage;
+        return finalDamage;
+    }
     
-    updateZombies(deltaTime) {
-        const currentTime = performance.now();
+    updateZombies(deltaTime, currentTime = performance.now()) {
         
         for (let i = this.zombies.length - 1; i >= 0; i--) {
             const zombie = this.zombies[i];
+
+            // Elite behaviors (regen/phasing/berserk)
+            this.updateEliteBehavior(zombie, deltaTime, currentTime);
+
+            // Status ticking (shock)
+            if (zombie.shockedUntil && currentTime < zombie.shockedUntil && zombie.shockDps) {
+                const shockDamage = (zombie.shockDps * deltaTime) / 1000;
+                if (shockDamage > 0) {
+                    zombie.health -= shockDamage;
+                    this.sessionDamage += shockDamage;
+                }
+            }
+
+            // Boss patterns (shield/summon/rage)
+            if (zombie.isBoss) {
+                this.updateBossBehavior(zombie, currentTime);
+            }
             
             // Move towards tower
             const dx = this.tower.x - zombie.x;
@@ -1327,8 +1628,12 @@ class TowerDefenseGame {
             
             if (distance > this.tower.radius + zombie.radius) {
                 // Zombie hasn't reached tower yet - keep moving
-                zombie.x += (dx / distance) * zombie.speed * deltaTime / 16;
-                zombie.y += (dy / distance) * zombie.speed * deltaTime / 16;
+                const isStunned = zombie.stunnedUntil && currentTime < zombie.stunnedUntil;
+                const isSlowed = zombie.slowedUntil && currentTime < zombie.slowedUntil;
+                const slowFactor = isSlowed ? (zombie.slowFactor || this.statusConfig.slowFactor) : 1;
+                const moveFactor = isStunned ? 0 : slowFactor;
+                zombie.x += (dx / distance) * zombie.speed * moveFactor * deltaTime / 16;
+                zombie.y += (dy / distance) * zombie.speed * moveFactor * deltaTime / 16;
             } else {
                 // Zombie reached tower - damage it periodically!
                 if (currentTime - zombie.lastDamageTime >= zombie.damageRate) {
@@ -1341,6 +1646,7 @@ class TowerDefenseGame {
                     } else {
                         this.tower.health -= zombieDamage;
                         this.challengeTracking.damageTaken += zombieDamage;
+                        this.addScreenShake(2, 120);
                         // Create red damage particle effect
                         this.createParticles(zombie.x, zombie.y, '#ff0000', 3);
                         
@@ -1401,26 +1707,53 @@ class TowerDefenseGame {
                 // Track boss kills
                 if (zombie.isBoss) {
                     this.sessionBossKills++;
+                    this.maybeOfferRelicDrop(zombie);
                 }
                 
                 // Exploder zombie deals damage to tower on death
                 if (zombie.isExploder) {
                     const explosionDamage = 5 + Math.floor(this.wave / 2);
                     const dist = Math.sqrt((zombie.x - this.tower.x) ** 2 + (zombie.y - this.tower.y) ** 2);
+                    const explosionRadius = 200;
+
+                    // Visualize the blast radius ring
+                    this.createExplosionRing(zombie.x, zombie.y, explosionRadius, '#ff00ff');
                     
                     // Only explode if within 200 pixels of tower
-                    if (dist < 200) {
+                    if (dist < explosionRadius) {
                         if (this.tower.shield > 0) {
                             this.tower.shield = Math.max(0, this.tower.shield - explosionDamage);
                         } else {
                             this.tower.health -= explosionDamage;
                         }
+                        this.addScreenShake(3, 180);
                         this.showMessage(`💥 EXPLOSION! -${explosionDamage} HP`, '#ff00ff');
                         // Large purple explosion particles
                         this.createParticles(zombie.x, zombie.y, '#ff00ff', 15);
                     } else {
                         // Small explosion even if far away
                         this.createParticles(zombie.x, zombie.y, '#ff00ff', 8);
+                    }
+                } else if (zombie.isElite && zombie.isVolatile) {
+                    const explosionDamage = 3 + Math.floor(this.wave / 3);
+                    const dist = Math.sqrt((zombie.x - this.tower.x) ** 2 + (zombie.y - this.tower.y) ** 2);
+                    const explosionRadius = 170;
+                    const ringColor = zombie.glowColor || '#ff00ff';
+
+                    // Visualize the blast radius ring
+                    this.createExplosionRing(zombie.x, zombie.y, explosionRadius, ringColor);
+                    // Volatile elites punish close-range kills a bit
+                    if (dist < explosionRadius) {
+                        if (this.tower.shield > 0) {
+                            this.tower.shield = Math.max(0, this.tower.shield - explosionDamage);
+                        } else {
+                            this.tower.health -= explosionDamage;
+                        }
+                        this.addScreenShake(2, 140);
+                        this.showMessage(`💥 VOLATILE BLAST! -${explosionDamage} HP`, ringColor);
+                        this.createParticles(zombie.x, zombie.y, ringColor, 12);
+                    } else {
+                        this.createParticles(zombie.x, zombie.y, ringColor, 6);
                     }
                 } else if (zombie.isSplitBoss) {
                     // Split Boss spawns 2 mini-bosses on death!
@@ -1535,30 +1868,41 @@ class TowerDefenseGame {
                 const target = sorted[i];
                 
                 // Attack primary target and handle chain lightning
-                this.attackTargetWithChain(target, this.tower.x, this.tower.y, []);
+                this.attackTargetWithChain(target, this.tower.x, this.tower.y, [], 0, currentTime);
             }
             
             this.tower.lastFire = currentTime;
         }
     }
     
-    attackTargetWithChain(target, fromX, fromY, hitTargets, chainCount = 0) {
+    attackTargetWithChain(target, fromX, fromY, hitTargets, chainCount = 0, currentTime = performance.now()) {
         // Prevent hitting the same zombie twice
         if (hitTargets.includes(target)) return;
         
         // Check for critical strike
         const isCrit = Math.random() < (this.critChance || 0);
         const damageDealt = isCrit ? Math.floor(this.tower.damage * 2) : this.tower.damage;
-        
-        // Deal damage to current target
-        target.health -= damageDealt;
+
+        // Deal damage to current target (accounts for armored/phasing)
+        const actualDamage = this.dealDamageToZombie(target, damageDealt);
         hitTargets.push(target);
-        
+
         // Track damage dealt
-        this.sessionDamage += damageDealt;
-        
-        // Create floating damage number (yellow for crits)
-        this.createDamageNumber(target.x, target.y - 20, damageDealt, isCrit);
+        this.sessionDamage += actualDamage;
+
+        if (actualDamage > 0) {
+            // Create floating damage number (yellow for crits)
+            this.createDamageNumber(target.x, target.y - 20, actualDamage, isCrit);
+        } else {
+            // Phased hit: subtle effect so it doesn't feel like a bug
+            this.createParticles(target.x, target.y, 'rgba(200, 200, 255, 0.55)', 2);
+        }
+
+        // Tiny hit pause on crits (feel)
+        if (isCrit) this.triggerHitPause(35);
+
+        // Apply status effects from upgrades
+        this.tryApplyStatusEffectsFromAttack(target, currentTime, chainCount);
         
         // Create lightning effect from source to target
         this.lightning.push({
@@ -1614,13 +1958,22 @@ class TowerDefenseGame {
                 })[0];
                 
                 // Chain to next target
-                this.attackTargetWithChain(nextTarget, target.x, target.y, hitTargets, chainCount + 1);
+                this.attackTargetWithChain(nextTarget, target.x, target.y, hitTargets, chainCount + 1, currentTime);
             }
         }
     }
     
     createParticles(x, y, color, count = 5) {
-        for (let i = 0; i < count; i++) {
+        if (!this.particlesEnabled) return;
+        // Reduce particle count on mobile
+        if (this.isMobile) count = Math.ceil(count / 2);
+        
+        // Check particle limit
+        if (this.particles.length >= this.maxParticles) return;
+        
+        const particlesToCreate = Math.min(count, this.maxParticles - this.particles.length);
+        
+        for (let i = 0; i < particlesToCreate; i++) {
             this.particles.push({
                 x: x,
                 y: y,
@@ -1657,6 +2010,10 @@ class TowerDefenseGame {
     }
     
     updateParticles(deltaTime) {
+        if (!this.particlesEnabled) {
+            this.particles.length = 0;
+            return;
+        }
         for (let i = this.particles.length - 1; i >= 0; i--) {
             const p = this.particles[i];
             p.x += p.vx;
@@ -1679,6 +2036,10 @@ class TowerDefenseGame {
     }
     
     updateTowerSparks(deltaTime) {
+        if (!this.particlesEnabled) {
+            this.towerSparks.length = 0;
+            return;
+        }
         for (let i = this.towerSparks.length - 1; i >= 0; i--) {
             const spark = this.towerSparks[i];
             spark.x += spark.vx;
@@ -1691,6 +2052,10 @@ class TowerDefenseGame {
     }
     
     updateImpactParticles(deltaTime) {
+        if (!this.particlesEnabled) {
+            this.impactParticles.length = 0;
+            return;
+        }
         for (let i = this.impactParticles.length - 1; i >= 0; i--) {
             const p = this.impactParticles[i];
             p.x += p.vx;
@@ -1699,6 +2064,32 @@ class TowerDefenseGame {
             if (p.life <= 0) {
                 this.impactParticles.splice(i, 1);
             }
+        }
+    }
+
+    createExplosionRing(x, y, radius, color = '#ff00ff') {
+        if (!Number.isFinite(radius) || radius <= 0) return;
+        if (!this.explosionRings) this.explosionRings = [];
+
+        // Keep it lightweight
+        if (this.explosionRings.length >= 10) this.explosionRings.shift();
+
+        this.explosionRings.push({
+            x,
+            y,
+            targetRadius: radius,
+            life: 650,
+            maxLife: 650,
+            color
+        });
+    }
+
+    updateExplosionRings(deltaTime) {
+        if (!this.explosionRings || this.explosionRings.length === 0) return;
+        for (let i = this.explosionRings.length - 1; i >= 0; i--) {
+            const r = this.explosionRings[i];
+            r.life -= deltaTime;
+            if (r.life <= 0) this.explosionRings.splice(i, 1);
         }
     }
     
@@ -1718,9 +2109,19 @@ class TowerDefenseGame {
     }
     
     draw() {
+        this.ctx.save();
+
+        if (this.screenShakeEnabled && this.shakeTime > 0 && this.shakeDuration > 0) {
+            const t = Math.max(0, Math.min(1, this.shakeTime / this.shakeDuration));
+            const mag = this.shakeIntensity * t;
+            const ox = (Math.random() * 2 - 1) * mag;
+            const oy = (Math.random() * 2 - 1) * mag;
+            this.ctx.translate(ox, oy);
+        }
+
         // Clear canvas
         this.ctx.fillStyle = '#0a0a0a';
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.fillRect(0, 0, this.width, this.height);
         
         // Draw range indicator
         this.ctx.strokeStyle = 'rgba(0, 255, 255, 0.2)';
@@ -1852,6 +2253,18 @@ class TowerDefenseGame {
             
             // Zombie body with type-specific color and glow effect
             this.ctx.fillStyle = zombie.color || '#4a4';
+
+            // Phasing visual: semi-transparent with a dashed ring
+            if (zombie.isPhased) {
+                this.ctx.globalAlpha = 0.45;
+                this.ctx.setLineDash([6, 6]);
+                this.ctx.strokeStyle = zombie.glowColor || 'rgba(200, 200, 255, 0.8)';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.arc(zombie.x, zombie.y, zombie.radius + 9, 0, Math.PI * 2);
+                this.ctx.stroke();
+                this.ctx.setLineDash([]);
+            }
             
             // Add glow effect for special zombies
             if (zombie.isBoss || zombie.type === 'exploder' || zombie.type === 'tank' || zombie.isElite) {
@@ -1863,6 +2276,33 @@ class TowerDefenseGame {
             this.ctx.arc(zombie.x, zombie.y, zombie.radius, 0, Math.PI * 2);
             this.ctx.fill();
             this.ctx.shadowBlur = 0;
+
+            if (zombie.isPhased) {
+                this.ctx.globalAlpha = 1;
+            }
+
+            // Status rings (slow/shock/stun)
+            const now = performance.now();
+            if (zombie.stunnedUntil && now < zombie.stunnedUntil) {
+                this.ctx.strokeStyle = 'rgba(255, 0, 255, 0.6)';
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.arc(zombie.x, zombie.y, zombie.radius + 4, 0, Math.PI * 2);
+                this.ctx.stroke();
+            } else if (zombie.slowedUntil && now < zombie.slowedUntil) {
+                this.ctx.strokeStyle = 'rgba(0, 221, 255, 0.55)';
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.arc(zombie.x, zombie.y, zombie.radius + 4, 0, Math.PI * 2);
+                this.ctx.stroke();
+            }
+            if (zombie.shockedUntil && now < zombie.shockedUntil) {
+                this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.45)';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.arc(zombie.x, zombie.y, zombie.radius + 7, 0, Math.PI * 2);
+                this.ctx.stroke();
+            }
             
             // Zombie health bar
             const zhealthPercent = zombie.health / zombie.maxHealth;
@@ -1935,6 +2375,27 @@ class TowerDefenseGame {
             this.ctx.fill();
             this.ctx.globalAlpha = 1;
         });
+
+        // Draw explosion radius rings
+        if (this.explosionRings && this.explosionRings.length) {
+            this.explosionRings.forEach(r => {
+                const t = 1 - (r.life / r.maxLife);
+                const eased = 1 - Math.pow(1 - t, 2); // easeOutQuad
+                const currentRadius = r.targetRadius * eased;
+                const alpha = Math.max(0, 0.55 * (1 - t));
+
+                this.ctx.save();
+                this.ctx.globalAlpha = alpha;
+                this.ctx.strokeStyle = r.color;
+                this.ctx.lineWidth = Math.max(1.5, 6 * (1 - t));
+                this.ctx.shadowColor = r.color;
+                this.ctx.shadowBlur = 14 * (1 - t);
+                this.ctx.beginPath();
+                this.ctx.arc(r.x, r.y, currentRadius, 0, Math.PI * 2);
+                this.ctx.stroke();
+                this.ctx.restore();
+            });
+        }
         
         // Draw gold coins
         this.goldCoins.forEach(coin => {
@@ -1950,50 +2411,482 @@ class TowerDefenseGame {
             this.ctx.fill();
             this.ctx.globalAlpha = 1;
         });
+
+        this.ctx.restore();
     }
     
     updateUI() {
-        document.getElementById('wave').textContent = this.wave;
-        document.getElementById('kills').textContent = this.kills;
-        document.getElementById('gold').textContent = this.gold;
-        document.getElementById('towerHealth').textContent = Math.max(0, Math.floor(this.tower.health));
+        if (!this.ui) this.cacheUIElements();
+
+        this.ui.wave && (this.ui.wave.textContent = this.wave);
+        this.ui.kills && (this.ui.kills.textContent = this.kills);
+        this.ui.gold && (this.ui.gold.textContent = this.gold);
+        this.ui.towerHealth && (this.ui.towerHealth.textContent = Math.max(0, Math.floor(this.tower.health)));
+
+        // Objective HUD
+        this.ui.runObjectiveText && (this.ui.runObjectiveText.textContent = this.getObjectiveDisplayText());
         
         // Update player name display
         const playerName = localStorage.getItem('playerName') || 'Guest';
-        const playerNameElement = document.getElementById('currentPlayerName');
-        if (playerNameElement) {
-            playerNameElement.textContent = `Player: ${playerName}`;
-        }
+        this.ui.currentPlayerName && (this.ui.currentPlayerName.textContent = `Player: ${playerName}`);
         
         // Update gems display
-        const gemsElement = document.getElementById('gemsAmount');
-        if (gemsElement && this.permStats) {
-            gemsElement.textContent = this.permStats.gems || 0;
+        this.ui.gemsAmount && this.permStats && (this.ui.gemsAmount.textContent = this.permStats.gems || 0);
+    }
+
+    updateUIThrottled(currentTime, force = false) {
+        if (force || currentTime - this.uiLastUpdate >= this.uiUpdateInterval) {
+            this.updateUI();
+            this.uiLastUpdate = currentTime;
         }
+    }
+
+    addScreenShake(intensity = 2, duration = 120) {
+        if (!this.screenShakeEnabled) return;
+        if (duration <= 0 || intensity <= 0) return;
+        this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
+        this.shakeDuration = Math.max(this.shakeDuration, duration);
+        this.shakeTime = Math.max(this.shakeTime, duration);
     }
     
     showMessage(text, color) {
         // Could add a toast notification here
         console.log(text);
     }
+
+    // ==========================================
+    // HIT PAUSE / STATUS EFFECTS / BOSSES
+    // ==========================================
+
+    triggerHitPause(ms = 30) {
+        if (!Number.isFinite(ms) || ms <= 0) return;
+        this.hitPauseTime = Math.min(80, Math.max(this.hitPauseTime, ms));
+    }
+
+    tryApplyStatusEffectsFromAttack(target, currentTime, chainCount) {
+        if (!target) return;
+
+        const overchargeActive = this.abilities?.overcharge?.activeUntil && currentTime < this.abilities.overcharge.activeUntil;
+        const shockChance = (this.statusConfig.shockChance || 0) + (overchargeActive ? 0.08 : 0);
+        if (shockChance > 0 && Math.random() < shockChance) {
+            this.applyShock(target, currentTime, this.statusConfig.shockDurationMs, this.statusConfig.shockDps);
+        }
+
+        const slowChance = Math.max(0, (this.statusConfig.slowChance || 0) + (chainCount > 0 ? 0.05 : 0));
+        if (slowChance > 0 && Math.random() < slowChance) {
+            this.applySlow(target, currentTime, this.statusConfig.slowDurationMs, this.statusConfig.slowFactor);
+        }
+    }
+
+    applySlow(zombie, currentTime, durationMs, slowFactor) {
+        if (!zombie) return;
+        const dur = Math.max(200, durationMs || 0);
+        const factor = Math.max(0.2, Math.min(0.95, slowFactor || this.statusConfig.slowFactor));
+        const until = currentTime + dur;
+        zombie.slowedUntil = Math.max(zombie.slowedUntil || 0, until);
+        zombie.slowFactor = Math.min(zombie.slowFactor || 1, factor);
+    }
+
+    applyShock(zombie, currentTime, durationMs, dps) {
+        if (!zombie) return;
+        const dur = Math.max(200, durationMs || 0);
+        zombie.shockedUntil = Math.max(zombie.shockedUntil || 0, currentTime + dur);
+        zombie.shockDps = Math.max(zombie.shockDps || 0, Math.max(0, dps || 0));
+    }
+
+    applyStun(zombie, currentTime, durationMs) {
+        if (!zombie) return;
+        let dur = Math.max(100, durationMs || 0);
+        if (zombie.isBoss) dur = Math.floor(dur * 0.5);
+        zombie.stunnedUntil = Math.max(zombie.stunnedUntil || 0, currentTime + dur);
+    }
+
+    updateBossBehavior(zombie, currentTime) {
+        if (!zombie.bossInit) {
+            zombie.bossInit = true;
+            zombie.bossPhase = 1;
+            zombie.bossMaxShield = Math.floor(20 + this.wave * 3);
+            zombie.nextSummonAt = currentTime + 3500;
+        }
+
+        const hpPct = zombie.maxHealth > 0 ? (zombie.health / zombie.maxHealth) : 0;
+
+        if (zombie.bossPhase === 1 && hpPct <= 0.7) {
+            zombie.bossPhase = 2;
+            this.showNarration('🛡️ BOSS SHIELD! 🛡️', 1800);
+            this.triggerHitPause(60);
+        } else if (zombie.bossPhase === 2 && hpPct <= 0.35) {
+            zombie.bossPhase = 3;
+            zombie.speed *= 1.25;
+            this.showNarration('😡 BOSS RAGE! 😡', 1800);
+            this.triggerHitPause(60);
+        }
+
+        if (currentTime >= (zombie.nextSummonAt || 0)) {
+            zombie.nextSummonAt = currentTime + 6500;
+
+            for (let j = 0; j < 2; j++) {
+                const a = Math.random() * Math.PI * 2;
+                const r = zombie.radius + 20;
+                const spawnX = zombie.x + Math.cos(a) * r;
+                const spawnY = zombie.y + Math.sin(a) * r;
+                this.zombies.push({
+                    x: spawnX,
+                    y: spawnY,
+                    type: (this.wave >= 7 && Math.random() < 0.35) ? 'runner' : 'normal',
+                    radius: 12,
+                    health: 14 + this.wave * 3,
+                    maxHealth: 14 + this.wave * 3,
+                    speed: 0.65 + this.wave * 0.04,
+                    goldValue: 6 + this.wave,
+                    lastDamageTime: 0,
+                    damageRate: 1000,
+                    damage: 1,
+                    color: '#00ff00',
+                    emoji: '🧟',
+                    isBoss: false,
+                    isSpawn: true
+                });
+            }
+
+            this.createParticles(zombie.x, zombie.y, '#ff00ff', 8);
+        }
+    }
+
+    // ==========================================
+    // BETWEEN-WAVE CHOICES / OBJECTIVES / CURSES
+    // ==========================================
+
+    onWaveAdvanced(currentTime) {
+        this.checkObjectiveCompletion();
+        this.maybeOfferWaveChoice(currentTime);
+    }
+
+    maybeOfferWaveChoice(currentTime) {
+        if (!this.isGameStarted || this.isGameOver) return;
+        if (this.waveChoiceState.active) return;
+        if (this.waveChoiceState.waveOffered === this.wave) return;
+
+        const options = this.generateWaveChoices();
+        if (!options || options.length === 0) return;
+
+        this.waveChoiceState = { active: true, options, waveOffered: this.wave };
+        this.openWaveChoicePanel(currentTime);
+    }
+
+    openWaveChoicePanel(currentTime) {
+        if (!this.ui) this.cacheUIElements();
+        this.isPaused = true;
+        this.ui.waveChoiceBackdrop && this.ui.waveChoiceBackdrop.classList.add('active');
+        this.ui.waveChoicePanel && this.ui.waveChoicePanel.classList.add('active');
+
+        if (this.ui.waveChoiceSubtitle) {
+            const objectiveText = this.getObjectiveDisplayText();
+            this.ui.waveChoiceSubtitle.textContent = objectiveText && objectiveText !== '—'
+                ? `Wave ${this.wave} • ${objectiveText}`
+                : `Wave ${this.wave}`;
+        }
+
+        const container = this.ui.waveChoiceOptions;
+        if (!container) return;
+        container.innerHTML = '';
+
+        this.waveChoiceState.options.forEach((opt) => {
+            const btn = document.createElement('button');
+            btn.className = 'upgrade-option wave-choice-option';
+            btn.type = 'button';
+            btn.innerHTML = `
+                <div class="upgrade-icon">${opt.icon || '⚡'}</div>
+                <div class="upgrade-name">${opt.name}</div>
+                <div class="upgrade-desc">${opt.desc}</div>
+            `;
+            btn.addEventListener('click', () => this.applyWaveChoice(opt, currentTime));
+            container.appendChild(btn);
+        });
+    }
+
+    closeWaveChoicePanel() {
+        if (!this.ui) this.cacheUIElements();
+        this.ui.waveChoiceBackdrop && this.ui.waveChoiceBackdrop.classList.remove('active');
+        this.ui.waveChoicePanel && this.ui.waveChoicePanel.classList.remove('active');
+        this.ui.waveChoiceOptions && (this.ui.waveChoiceOptions.innerHTML = '');
+        this.waveChoiceState.active = false;
+        this.isPaused = false;
+    }
+
+    applyWaveChoice(choice, currentTime) {
+        try {
+            choice?.apply?.(this, currentTime);
+        } catch (e) {
+            console.error('Failed to apply choice:', e);
+        }
+
+        this.updateAbilityUI(currentTime, true);
+        this.updateUI();
+        this.playSound('upgrade');
+        this.closeWaveChoicePanel();
+    }
+
+    generateWaveChoices() {
+        const pool = [];
+
+        pool.push({ id: 'damagePlus', icon: '💥', name: 'Damage Surge', desc: '+3 tower damage', apply: (g) => { g.tower.damage += 3; } });
+        pool.push({ id: 'rangePlus', icon: '📡', name: 'Long Range Coils', desc: '+25 tower range', apply: (g) => { g.tower.range += 25; } });
+        pool.push({ id: 'fireRatePlus', icon: '⚡', name: 'Faster Cycling', desc: '-70ms fire rate', apply: (g) => { g.tower.fireRate = Math.max(180, g.tower.fireRate - 70); } });
+        pool.push({ id: 'shieldPack', icon: '🛡️', name: 'Shield Pack', desc: '+6 max shield and refill', apply: (g) => { g.tower.maxShield = (g.tower.maxShield || 0) + 6; g.tower.shield = g.tower.maxShield; } });
+
+        // More general upgrades
+        pool.push({ id: 'targetsPlus', icon: '🎯', name: 'Multi-Target Wiring', desc: '+1 max targets', apply: (g) => { g.tower.maxTargets = Math.min(8, (g.tower.maxTargets || 1) + 1); } });
+        pool.push({ id: 'chainPlus', icon: '⛓️', name: 'Chain Amplifier', desc: '+1 chain jump', apply: (g) => { g.tower.chainLightning = Math.min(8, (g.tower.chainLightning || 0) + 1); } });
+        pool.push({ id: 'chainRangePlus', icon: '🧲', name: 'Arc Reach', desc: '+18 chain range', apply: (g) => { g.tower.chainRange = Math.min(180, (g.tower.chainRange || 80) + 18); } });
+        pool.push({ id: 'goldBurst', icon: '💰', name: 'Gold Burst', desc: '+120 gold now', apply: (g) => { g.gold += 120; } });
+        pool.push({ id: 'healPulse', icon: '🧰', name: 'Repair Pulse', desc: '+35 HP (up to max)', apply: (g) => { g.tower.health = Math.min(g.tower.maxHealth, g.tower.health + 35); } });
+
+        // Click upgrades (NOT skill-shot; just tighter randomness)
+        pool.push({
+            id: 'clickFocus',
+            icon: '🎯',
+            name: 'Focused Discharge',
+            desc: 'Tighter click strike radius (-12px)',
+            apply: (g) => { g.clickStrikeRadius = Math.max(10, (Number(g.clickStrikeRadius ?? 50) - 12)); }
+        });
+        pool.push({ id: 'clickDamagePlus', icon: '🖱️', name: 'Hot Click Coils', desc: '+3 click damage', apply: (g) => { g.clickDamage += 3; } });
+        pool.push({ id: 'clickFaster', icon: '⚡', name: 'Rapid Taps', desc: 'Faster click fire rate (-20ms)', apply: (g) => { g.clickFireRate = Math.max(60, (g.clickFireRate || 150) - 20); } });
+
+        // Crit as a run modifier (stacks with gem upgrades)
+        pool.push({ id: 'critPlus', icon: '✨', name: 'Critical Coils', desc: '+3% crit chance', apply: (g) => { g.critChance = Math.min(0.5, (g.critChance || 0) + 0.03); } });
+
+        pool.push({ id: 'slowUpgrade', icon: '❄️', name: 'Cryo Conductors', desc: 'Tower hits: +12% slow chance', apply: (g) => { g.statusConfig.slowChance = Math.min(0.6, (g.statusConfig.slowChance || 0) + 0.12); } });
+        pool.push({ id: 'shockUpgrade', icon: '⚡', name: 'Static Field', desc: 'Tower hits: +10% shock chance (DoT)', apply: (g) => { g.statusConfig.shockChance = Math.min(0.6, (g.statusConfig.shockChance || 0) + 0.10); g.statusConfig.shockDps = Math.max(g.statusConfig.shockDps || 0, 6 + Math.floor(g.wave / 2)); } });
+        pool.push({ id: 'slowLonger', icon: '🧊', name: 'Deep Freeze', desc: 'Slow lasts +350ms', apply: (g) => { g.statusConfig.slowDurationMs = Math.min(3200, (g.statusConfig.slowDurationMs || 1400) + 350); } });
+        pool.push({ id: 'shockHarder', icon: '🌩️', name: 'Overvoltage', desc: '+2 shock DPS', apply: (g) => { g.statusConfig.shockDps = Math.min(50, (g.statusConfig.shockDps || 0) + 2); } });
+
+        if (!this.abilities.emp.unlocked) {
+            pool.push({ id: 'unlockEmp', icon: '⚡', name: 'Unlock: EMP Pulse', desc: 'Stun nearby zombies (active)', apply: (g) => { g.abilities.emp.unlocked = true; } });
+        } else {
+            pool.push({ id: 'empCooldown', icon: '⏱️', name: 'EMP Capacitors', desc: 'EMP cooldown -3s', apply: (g) => { g.abilities.emp.cooldownMs = Math.max(6000, (g.abilities.emp.cooldownMs || 20000) - 3000); } });
+        }
+        if (!this.abilities.overcharge.unlocked) {
+            pool.push({ id: 'unlockOvercharge', icon: '⚙️', name: 'Unlock: Overcharge', desc: 'Boost fire rate (active)', apply: (g) => { g.abilities.overcharge.unlocked = true; } });
+        } else {
+            pool.push({ id: 'overCooldown', icon: '⏱️', name: 'Overcharge Inverters', desc: 'Overcharge cooldown -4s', apply: (g) => { g.abilities.overcharge.cooldownMs = Math.max(9000, (g.abilities.overcharge.cooldownMs || 30000) - 4000); } });
+            pool.push({ id: 'overLonger', icon: '🔧', name: 'Sustained Overcharge', desc: 'Overcharge lasts +1.2s', apply: (g) => { g.abilities.overcharge.durationMs = Math.min(12000, (g.abilities.overcharge.durationMs || 8000) + 1200); } });
+        }
+
+        const shouldOfferCurse = this.wave >= 6 && this.wave % 4 === 0;
+        if (shouldOfferCurse) {
+            const curse = this.generateCurseChoice();
+            curse && pool.push(curse);
+        }
+
+        const picks = [];
+        const used = new Set();
+        let safety = 0;
+        while (picks.length < 3 && safety < 60) {
+            safety++;
+            const opt = pool[Math.floor(Math.random() * pool.length)];
+            if (!opt || used.has(opt.id)) continue;
+            used.add(opt.id);
+            picks.push(opt);
+        }
+        return picks;
+    }
+
+    generateCurseChoice() {
+        const curses = [
+            {
+                id: 'curseGlassTower',
+                icon: '☠️',
+                name: 'Curse: Glass Tower',
+                desc: '+20% damage, -15% max HP',
+                apply: (g) => {
+                    g.runCurses.push('Glass Tower');
+                    g.tower.damage = Math.floor(g.tower.damage * 1.2);
+                    const newMax = Math.max(40, Math.floor(g.tower.maxHealth * 0.85));
+                    g.tower.maxHealth = newMax;
+                    g.tower.health = Math.min(g.tower.health, newMax);
+                }
+            },
+            {
+                id: 'curseNarrowCoils',
+                icon: '☠️',
+                name: 'Curse: Narrow Coils',
+                desc: '+25% gold, -12% range',
+                apply: (g) => {
+                    g.runCurses.push('Narrow Coils');
+                    g.goldMultiplier = (g.goldMultiplier || 1) * 1.25;
+                    g.tower.range = Math.max(60, Math.floor(g.tower.range * 0.88));
+                }
+            }
+        ];
+        return curses[Math.floor(Math.random() * curses.length)];
+    }
+
+    generateRunObjective() {
+        const targetWave = this.wave + 5;
+        const candidates = [
+            {
+                id: 'objNoUpgrades',
+                text: `Use ≤ 2 upgrades by Wave ${targetWave}`,
+                targetWave,
+                check: () => (this.challengeTracking.upgradesUsed || 0) <= 2 && this.wave >= targetWave,
+                fail: () => (this.challengeTracking.upgradesUsed || 0) > 2 && this.wave < targetWave,
+                reward: () => { this.gold += 180; this.showNarration('🎯 Objective Complete! +180 Gold', 1800); }
+            },
+            {
+                id: 'objNoDamage',
+                text: `Take ≤ 8 damage by Wave ${targetWave}`,
+                targetWave,
+                check: () => (this.challengeTracking.damageTaken || 0) <= 8 && this.wave >= targetWave,
+                fail: () => (this.challengeTracking.damageTaken || 0) > 8 && this.wave < targetWave,
+                reward: () => { this.gold += 220; this.showNarration('🎯 Objective Complete! +220 Gold', 1800); }
+            },
+            {
+                id: 'objClickLimit',
+                text: `Click-kill ≤ 1 zombie by Wave ${targetWave}`,
+                targetWave,
+                check: () => (this.challengeTracking.clickKills || 0) <= 1 && this.wave >= targetWave,
+                fail: () => (this.challengeTracking.clickKills || 0) > 1 && this.wave < targetWave,
+                reward: () => { this.tower.damage += 2; this.showNarration('🎯 Objective Complete! +2 Damage', 1800); }
+            }
+        ];
+        this.runObjective = candidates[Math.floor(Math.random() * candidates.length)];
+        this.runObjective.completed = false;
+        this.runObjective.failed = false;
+    }
+
+    checkObjectiveCompletion() {
+        if (!this.runObjective || this.runObjective.completed || this.runObjective.failed) return;
+
+        if (typeof this.runObjective.fail === 'function' && this.runObjective.fail()) {
+            this.runObjective.failed = true;
+            this.showNarration('🎯 Objective Failed', 1400);
+            return;
+        }
+
+        if (typeof this.runObjective.check === 'function' && this.runObjective.check()) {
+            this.runObjective.completed = true;
+            this.runObjective.reward && this.runObjective.reward();
+        }
+    }
+
+    getObjectiveDisplayText() {
+        if (!this.runObjective) return '—';
+        if (this.runObjective.completed) return 'Complete ✓';
+        if (this.runObjective.failed) return 'Failed ✖';
+        return this.runObjective.text || '—';
+    }
+
+    // ==========================================
+    // ABILITIES
+    // ==========================================
+
+    tryUseAbility(abilityKey) {
+        if (!this.isGameStarted || this.isPaused || this.isGameOver) return;
+
+        const now = performance.now();
+        const ability = this.abilities?.[abilityKey];
+        if (!ability || !ability.unlocked) return;
+        if (now - (ability.lastUsedAt || -Infinity) < ability.cooldownMs) return;
+
+        if (abilityKey === 'emp') {
+            this.useEmp(now);
+        } else if (abilityKey === 'overcharge') {
+            this.useOvercharge(now);
+        }
+
+        ability.lastUsedAt = now;
+        this.updateAbilityUI(now, true);
+    }
+
+    useEmp(now) {
+        const radius = Math.max(140, this.tower.range * 0.8);
+        const stunMs = 1400;
+        let affected = 0;
+
+        for (const z of this.zombies) {
+            const dx = z.x - this.tower.x;
+            const dy = z.y - this.tower.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d <= radius) {
+                this.applyStun(z, now, stunMs);
+                this.applyShock(z, now, 1200, Math.max(0, 6 + Math.floor(this.wave / 2)));
+                affected++;
+            }
+        }
+
+        this.createParticles(this.tower.x, this.tower.y, '#00ddff', 12);
+        this.addScreenShake(3, 160);
+        this.showNarration(`⚡ EMP! (${affected})`, 1200);
+        this.playSound('boss');
+    }
+
+    useOvercharge(now) {
+        const durationMs = Math.max(1500, Number(this.abilities?.overcharge?.durationMs ?? 8000));
+        const oldFireRate = this.tower.fireRate;
+        this.abilities.overcharge.activeUntil = now + durationMs;
+        this.tower.fireRate = Math.max(160, Math.floor(oldFireRate * 0.82));
+        this.createParticles(this.tower.x, this.tower.y, '#ffff00', 10);
+        this.showNarration('⚙️ OVERCHARGE!', 1200);
+        this.playSound('upgrade');
+
+        setTimeout(() => {
+            try {
+                const now2 = performance.now();
+                if (!this.abilities?.overcharge?.activeUntil || now2 < this.abilities.overcharge.activeUntil) return;
+                this.tower.fireRate = Math.min(1200, Math.floor(oldFireRate));
+            } catch (e) {}
+        }, durationMs + 50);
+    }
+
+    updateAbilityUI(currentTime, force = false) {
+        if (!this.ui) this.cacheUIElements();
+        const empBtn = this.ui.abilityEmpBtn;
+        const overBtn = this.ui.abilityOverchargeBtn;
+        const format = (ms) => `${Math.ceil(ms / 1000)}s`;
+
+        if (empBtn) {
+            if (!this.abilities.emp.unlocked) {
+                empBtn.classList.add('disabled');
+                empBtn.textContent = '⚡ EMP (Locked)';
+            } else {
+                const rem = this.abilities.emp.cooldownMs - (currentTime - (this.abilities.emp.lastUsedAt || -Infinity));
+                if (rem > 0) {
+                    empBtn.classList.add('disabled');
+                    empBtn.textContent = `⚡ EMP (${format(rem)})`;
+                } else {
+                    empBtn.classList.remove('disabled');
+                    empBtn.textContent = '⚡ EMP (Ready)';
+                }
+            }
+        }
+
+        if (overBtn) {
+            if (!this.abilities.overcharge.unlocked) {
+                overBtn.classList.add('disabled');
+                overBtn.textContent = '⚙ OVERCHARGE (Locked)';
+            } else {
+                const active = this.abilities.overcharge.activeUntil && currentTime < this.abilities.overcharge.activeUntil;
+                const rem = this.abilities.overcharge.cooldownMs - (currentTime - (this.abilities.overcharge.lastUsedAt || -Infinity));
+                if (active) {
+                    overBtn.classList.add('disabled');
+                    overBtn.textContent = '⚙ OVERCHARGE (Active)';
+                } else if (rem > 0) {
+                    overBtn.classList.add('disabled');
+                    overBtn.textContent = `⚙ OVERCHARGE (${format(rem)})`;
+                } else {
+                    overBtn.classList.remove('disabled');
+                    overBtn.textContent = '⚙ OVERCHARGE (Ready)';
+                }
+            }
+        }
+    }
     
     showNarration(text, duration = 2500) {
-        // Just play sound and speak - no visual popup
+        // Visual-only narration (no Text-to-Speech)
         this.playSound('powerUp');
-        
-        // Speak the narration (remove emojis for cleaner speech)
-        const cleanText = text.replace(/[⚡💀⚠️🏆✓]/g, '').trim();
-        
-        // Adjust speech based on message type - slower rates sound more natural
-        if (text.includes('BOSS')) {
-            this.speak(cleanText, { rate: 0.85, pitch: 0.9, volume: 1.0 }); // Slower, slightly deeper
-        } else if (text.includes('CRITICAL')) {
-            this.speak(cleanText, { rate: 1.0, pitch: 1.1, volume: 1.0 }); // Normal speed, slightly higher
-        } else if (text.includes('ACHIEVEMENT')) {
-            this.speak(cleanText, { rate: 0.95, pitch: 1.05, volume: 1.0 }); // Slightly slower for clarity
-        } else {
-            this.speak(cleanText, { rate: 0.9, pitch: 1.0, volume: 1.0 }); // Slightly slower than default
-        }
+        this.showMessage(text, '#ffd700');
+        // Keep signature for existing call sites; duration unused.
     }
     
     // Tooltip System
@@ -2063,11 +2956,11 @@ class TowerDefenseGame {
                     `
                 },
                 permClick: {
-                    title: '👆 Permanent Click Power',
+                    title: '🖱️ Permanent Click Power',
                     content: `
                         <p><span class="tooltip-current">Current Bonus:</span> +${this.permUpgrades.clickDamage} click damage</p>
                         <p><span class="tooltip-upgrade">Next Level:</span> +${this.permUpgrades.clickDamage + 1} click damage</p>
-                        <p class="tooltip-effect">💡 Your clicks/taps will deal more damage to zombies</p>
+                        <p class="tooltip-effect">💡 Clicks/taps deal more damage to zombies</p>
                     `
                 },
                 permGold: {
@@ -2079,86 +2972,88 @@ class TowerDefenseGame {
                     `
                 }
             };
+
             return permData[upgradeType];
-        } else {
-            // In-game upgrade tooltips
-            const gameData = {
-                damage: {
-                    title: '💥 Increase Damage',
-                    content: `
-                        <p><span class="tooltip-current">Current Damage:</span> ${this.tower.damage}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.damage + 5}</p>
-                        <p class="tooltip-effect">💡 Higher damage kills zombies faster and helps against tougher enemies</p>
-                    `
-                },
-                range: {
-                    title: '📡 Increase Range',
-                    content: `
-                        <p><span class="tooltip-current">Current Range:</span> ${this.tower.range.toFixed(0)}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.range + 30).toFixed(0)}</p>
-                        <p class="tooltip-effect">💡 Larger range lets you attack enemies earlier, giving more time to defeat them</p>
-                    `
-                },
-                fireRate: {
-                    title: '⚡ Faster Fire Rate',
-                    content: `
-                        <p><span class="tooltip-current">Current Speed:</span> ${this.tower.fireRate.toFixed(2)}s per attack</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.fireRate - 0.1).toFixed(2)}s per attack</p>
-                        <p class="tooltip-effect">💡 Attack more frequently to deal more DPS (damage per second)</p>
-                    `
-                },
-                health: {
-                    title: '❤️ Repair Tower',
-                    content: `
-                        <p><span class="tooltip-current">Current Health:</span> ${this.tower.health}/${this.tower.maxHealth}</p>
-                        <p><span class="tooltip-upgrade">After Repair:</span> ${Math.min(this.tower.health + 50, this.tower.maxHealth)}/${this.tower.maxHealth}</p>
-                        <p class="tooltip-effect">💡 Restore HP to survive longer. Max HP can't be exceeded</p>
-                    `
-                },
-                targets: {
-                    title: '🎯 Multi-Target',
-                    content: `
-                        <p><span class="tooltip-current">Current Targets:</span> ${this.tower.maxTargets}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.maxTargets + 1}</p>
-                        <p class="tooltip-effect">💡 Attack multiple zombies simultaneously for better crowd control</p>
-                    `
-                },
-                clickDamage: {
-                    title: '👆 Click Power',
-                    content: `
-                        <p><span class="tooltip-current">Current Click Damage:</span> ${this.clickDamage}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.clickDamage + 2}</p>
-                        <p class="tooltip-effect">💡 Manually click/tap zombies to deal damage. Great for finishing off tough enemies</p>
-                    `
-                },
-                chainLightning: {
-                    title: '⚡🔗 Chain Lightning',
-                    content: `
-                        <p><span class="tooltip-current">Current Jumps:</span> ${this.tower.chainLightningJumps}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.chainLightningJumps + 1}</p>
-                        <p class="tooltip-effect">💡 Lightning bounces between enemies, dealing 50% damage per jump. Excellent for groups</p>
-                    `
-                },
-                shield: {
-                    title: '🛡️ Shield Generator',
-                    content: `
-                        <p><span class="tooltip-current">Current Shield:</span> ${this.tower.shield}/${this.tower.maxShield}</p>
-                        <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.maxShield + 5} max shield</p>
-                        <p class="tooltip-effect">💡 Shields absorb damage before health. Regenerates 1 point every 3 seconds</p>
-                    `
-                }
-            };
-            return gameData[upgradeType];
         }
+
+        // In-game upgrade tooltips (minimal set)
+        const gameData = {
+            damage: {
+                title: '⚡ Increase Damage',
+                content: `
+                    <p><span class="tooltip-current">Current Damage:</span> ${this.tower.damage}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.damage + 5}</p>
+                    <p class="tooltip-effect">💡 Higher damage kills zombies faster</p>
+                `
+            },
+            range: {
+                title: '📡 Increase Range',
+                content: `
+                    <p><span class="tooltip-current">Current Range:</span> ${this.tower.range.toFixed(0)}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.range + 30).toFixed(0)}</p>
+                    <p class="tooltip-effect">💡 Larger range hits enemies sooner</p>
+                `
+            },
+            fireRate: {
+                title: '⏱️ Faster Fire Rate',
+                content: `
+                    <p><span class="tooltip-current">Current Speed:</span> ${this.tower.fireRate.toFixed(2)}s per attack</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.fireRate - 0.1).toFixed(2)}s per attack</p>
+                    <p class="tooltip-effect">💡 Attack more frequently for higher DPS</p>
+                `
+            },
+            health: {
+                title: '🛠️ Repair Tower',
+                content: `
+                    <p><span class="tooltip-current">Current Health:</span> ${this.tower.health}/${this.tower.maxHealth}</p>
+                    <p><span class="tooltip-upgrade">After Repair:</span> ${Math.min(this.tower.health + 50, this.tower.maxHealth)}/${this.tower.maxHealth}</p>
+                    <p class="tooltip-effect">💡 Restore HP (can’t exceed max)</p>
+                `
+            },
+            targets: {
+                title: '🎯 Multi-Target',
+                content: `
+                    <p><span class="tooltip-current">Current Targets:</span> ${this.tower.maxTargets}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.maxTargets + 1}</p>
+                    <p class="tooltip-effect">💡 Attack more enemies at once</p>
+                `
+            },
+            clickDamage: {
+                title: '🖱️ Click Power',
+                content: `
+                    <p><span class="tooltip-current">Current Click Damage:</span> ${this.clickDamage || 10}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.clickDamage || 10) + 5}</p>
+                    <p class="tooltip-effect">💡 Click/tap damage increases</p>
+                `
+            },
+            chainLightning: {
+                title: '⚡ Chain Lightning',
+                content: `
+                    <p><span class="tooltip-current">Current Chains:</span> ${this.tower.chainLightning}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.chainLightning + 1}</p>
+                    <p class="tooltip-effect">💡 Lightning jumps to additional targets</p>
+                `
+            },
+            shield: {
+                title: '🛡️ Shield',
+                content: `
+                    <p><span class="tooltip-current">Current Shield:</span> ${this.tower.maxShield || 0}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.maxShield || 0) + 25}</p>
+                    <p class="tooltip-effect">💡 Adds a buffer before HP is lost</p>
+                `
+            }
+        };
+
+        return gameData[upgradeType];
     }
-    
+
     gameOver() {
         this.isGameOver = true;
         this.isPaused = true;
-        
+
         // Play game over sound
         this.playSound('gameOver');
-        
+
         // Update permanent stats
         this.permStats.totalKills += this.kills;
         this.permStats.totalDamageDealt += this.sessionDamage;
@@ -2166,28 +3061,28 @@ class TowerDefenseGame {
         this.permStats.totalGoldEarned += this.sessionGoldEarned;
         this.permStats.bossesKilled += this.sessionBossKills;
         this.permStats.totalGamesPlayed++;
-        
+
         // Update zombie type kills
         for (let type in this.sessionZombieKills) {
             this.permStats.zombieKills[type] += this.sessionZombieKills[type];
         }
-        
+
         // Track highest wave
         if (this.wave > this.permStats.highestWave) {
             this.permStats.highestWave = this.wave;
         }
-        
+
         this.savePermanentStats();
-        
+
         // Check for new achievements
         this.checkAchievements();
-        
+
         // Check daily challenges
         this.checkDailyChallenges();
-        
+
         // Update leaderboards
         this.updateLeaderboards();
-        
+
         // Display leaderboards in console
         console.log('\n=== LEADERBOARDS ===');
         console.log('Highest Wave:');
@@ -2204,7 +3099,7 @@ class TowerDefenseGame {
                 console.log(`${i + 1}. ${entry.name} - ${this.formatTime(entry.score)} (${entry.date})`);
             });
         }
-        
+
         document.getElementById('finalWave').textContent = this.wave;
         document.getElementById('finalKills').textContent = this.kills;
         document.getElementById('gameOver').classList.add('active');
@@ -2266,6 +3161,7 @@ class TowerDefenseGame {
         this.isGameOver = false;
         this.isPaused = false;
         this.isGameStarted = false;
+        this.eliteSpawnedThisWave = false;
         
         document.getElementById('gameOver').classList.remove('active');
         document.getElementById('upgradeBtn').classList.remove('active');
@@ -2275,28 +3171,56 @@ class TowerDefenseGame {
     
     gameLoop(currentTime = 0) {
         if (!this.lastFrameTime) this.lastFrameTime = currentTime;
-        const deltaTime = currentTime - this.lastFrameTime;
+        let deltaTime = currentTime - this.lastFrameTime;
+        if (!Number.isFinite(deltaTime) || deltaTime < 0) deltaTime = 0;
+        // Clamp giant timesteps (tab switching / stutters)
+        deltaTime = Math.min(deltaTime, 50);
         this.lastFrameTime = currentTime;
+
+        // Hit pause: freeze game logic briefly for punchiness
+        if (this.hitPauseTime > 0) {
+            this.hitPauseTime = Math.max(0, this.hitPauseTime - deltaTime);
+            this.updateUIThrottled(currentTime);
+            this.draw();
+            requestAnimationFrame((time) => this.gameLoop(time));
+            return;
+        }
         
         // Apply speed multiplier to deltaTime for game logic
         const speedAdjustedDelta = deltaTime * this.speedMultiplier;
         
         if (!this.isPaused && !this.isGameOver && this.isGameStarted) {
-            // Spawn zombies (speed adjusted)
-            if (currentTime - this.lastSpawn > this.spawnRate / this.speedMultiplier) {
+            // Spawn zombies via a time accumulator (stable at high speed / low FPS)
+            this.spawnAccumulator += speedAdjustedDelta;
+
+            const spawnInterval = this.spawnRate;
+            let spawnsThisFrame = 0;
+            while (this.spawnAccumulator >= spawnInterval && spawnsThisFrame < 10) {
+                this.spawnAccumulator -= spawnInterval;
+                spawnsThisFrame++;
+
                 this.spawnZombie();
-                this.lastSpawn = currentTime;
                 this.zombiesSpawned++;
-                
+
                 // Increase difficulty every wave
                 if (this.zombiesSpawned >= this.zombiesPerWave) {
                     this.wave++;
                     this.zombiesSpawned = 0;
                     this.bossSpawned = false; // Reset boss flag for new wave
                     this.splitBossSpawned = false; // Reset split boss flag
+                    this.eliteSpawnedThisWave = false; // Reset elite flag for new wave
                     this.zombiesPerWave = Math.floor(5 + this.wave * 1.5);
                     this.spawnRate = Math.max(500, 2000 - (this.wave * 50)); // Spawn faster
-                    
+
+                    // Between-wave systems
+                    this.onWaveAdvanced(currentTime);
+
+                    // If a panel paused the game, stop spawning this frame
+                    if (this.isPaused) {
+                        this.spawnAccumulator = 0;
+                        break;
+                    }
+
                     // Determine themed wave (30% chance starting at wave 6)
                     this.currentWaveTheme = null; // Reset theme
                     if (this.wave >= 6 && Math.random() < 0.3 && this.wave % 5 !== 0) {
@@ -2305,9 +3229,9 @@ class TowerDefenseGame {
                         // Add advanced types if wave is high enough
                         if (this.wave >= 12) themeTypes.push('spawner');
                         if (this.wave >= 15) themeTypes.push('exploder');
-                        
+
                         this.currentWaveTheme = themeTypes[Math.floor(Math.random() * themeTypes.length)];
-                        
+
                         // Announce themed wave
                         const themeNames = {
                             'normal': '🧟 HORDE WAVE',
@@ -2320,7 +3244,7 @@ class TowerDefenseGame {
                         this.showMessage(themeNames[this.currentWaveTheme] + '!', '#ffff00');
                         this.showNarration(themeNames[this.currentWaveTheme] + '!', 2000);
                     }
-                    
+
                     // Narration for milestone waves
                     if (this.wave % 5 === 0) {
                         this.showNarration(`⚡ Wave ${this.wave} Incoming! ⚡`, 2000);
@@ -2329,15 +3253,28 @@ class TowerDefenseGame {
             }
             
             // Update game objects (with speed-adjusted deltaTime)
-            this.updateZombies(speedAdjustedDelta);
+            this.updateZombies(speedAdjustedDelta, currentTime);
             this.towerAttack(currentTime);
             this.updateLightning(speedAdjustedDelta);
             this.updateParticles(speedAdjustedDelta);
             this.updateDamageNumbers(speedAdjustedDelta);
             this.updateTowerSparks(speedAdjustedDelta);
             this.updateImpactParticles(speedAdjustedDelta);
+            this.updateExplosionRings(speedAdjustedDelta);
             this.updateGoldCoins(speedAdjustedDelta);
             this.handleContinuousShooting(currentTime);
+
+            // Screen shake decay (real time)
+            if (this.shakeTime > 0) {
+                this.shakeTime = Math.max(0, this.shakeTime - deltaTime);
+                if (this.shakeTime === 0) {
+                    this.shakeIntensity = 0;
+                    this.shakeDuration = 0;
+                }
+            }
+
+            this.updateAbilityUI(currentTime);
+            this.updateUIThrottled(currentTime);
             
             // Health regeneration (5 seconds = 5000ms)
             if (!this.lastRegenTime) this.lastRegenTime = currentTime;
@@ -2351,9 +3288,10 @@ class TowerDefenseGame {
                 }
                 this.lastRegenTime = currentTime;
             }
-            
-            this.updateUI();
         }
+
+        // Safety: if a relic drop paused the game but UI isn't visible, recover.
+        this.ensureRelicDropNotStuck(currentTime);
         
         // Always draw (even on menu/pause)
         this.draw();
@@ -2391,6 +3329,8 @@ class TowerDefenseGame {
                         maxShield: 0
                     },
                     clickDamage: this.clickDamage,
+                    clickStrikeRadius: this.clickStrikeRadius,
+                    clickFireRate: this.clickFireRate,
                     upgradeCosts: { 
                         damage: 100, 
                         range: 80, 
@@ -2433,14 +3373,27 @@ class TowerDefenseGame {
                 maxShield: this.tower.maxShield
             },
             clickDamage: this.clickDamage,
+            clickStrikeRadius: this.clickStrikeRadius,
+            clickFireRate: this.clickFireRate,
             upgradeCosts: { ...this.upgradeCosts },
             zombiesPerWave: this.zombiesPerWave,
             spawnRate: this.spawnRate,
+            runObjective: this.runObjective,
+            runCurses: this.runCurses,
+            statusConfig: this.statusConfig,
+            abilities: this.abilities,
             timestamp: Date.now()
         };
         
-        localStorage.setItem(`teslaTowerSave_slot${saveSlot}`, JSON.stringify(saveData));
-        this.showMessage(`Game Saved to Slot ${saveSlot}! ✓`, '#00ff00');
+        try {
+            localStorage.setItem(`teslaTowerSave_slot${saveSlot}`, JSON.stringify(saveData));
+            this.showMessage(`Game Saved to Slot ${saveSlot}! ✓`, '#00ff00');
+        } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+                alert('Storage full! Cannot save game. Please clear some data.');
+            }
+            console.error('Save failed:', e);
+        }
         this.updateSaveSlotInfo();
     }
     
@@ -2491,9 +3444,19 @@ class TowerDefenseGame {
             this.tower.shield = data.tower.shield;
             this.tower.maxShield = data.tower.maxShield;
             this.clickDamage = data.clickDamage;
+            this.clickStrikeRadius = Number.isFinite(data.clickStrikeRadius) ? data.clickStrikeRadius : (this.clickStrikeRadius ?? 50);
+            this.clickFireRate = Number.isFinite(data.clickFireRate) ? data.clickFireRate : (this.clickFireRate ?? 150);
             this.upgradeCosts = { ...data.upgradeCosts };
             this.zombiesPerWave = data.zombiesPerWave;
             this.spawnRate = data.spawnRate;
+
+            // Restore meta systems (backward compatible)
+            this.runObjective = data.runObjective || null;
+            this.runCurses = Array.isArray(data.runCurses) ? data.runCurses : [];
+            this.statusConfig = { ...this.statusConfig, ...(data.statusConfig || {}) };
+            if (data.abilities) {
+                this.abilities = { ...this.abilities, ...data.abilities };
+            }
             
             // Clear existing zombies
             this.zombies = [];
@@ -2684,6 +3647,27 @@ class TowerDefenseGame {
                 current: 'classic'
             };
         }
+
+        // Add relics if not present (backward compatibility)
+        if (!this.permStats.relics) {
+            this.permStats.relics = {
+                owned: [],
+                equipped: [null, null, null],
+                shards: 0,
+                levels: {}
+            };
+        }
+
+        if (!Array.isArray(this.permStats.relics.owned)) this.permStats.relics.owned = [];
+        if (!Array.isArray(this.permStats.relics.equipped) || this.permStats.relics.equipped.length !== 3) {
+            this.permStats.relics.equipped = [null, null, null];
+        }
+
+        if (typeof this.permStats.relics.shards !== 'number') this.permStats.relics.shards = 0;
+        if (!this.permStats.relics.levels || typeof this.permStats.relics.levels !== 'object') this.permStats.relics.levels = {};
+        this.permStats.relics.owned.forEach(id => {
+            if (this.permStats.relics.levels[id] == null) this.permStats.relics.levels[id] = 1;
+        });
         
         // NOTE: Don't check daily reward here - it should only trigger after player logs in!
         // Daily reward check moved to: confirmPlayerName(), loadGame(), and setupTitleScreen()
@@ -2786,7 +3770,7 @@ class TowerDefenseGame {
         document.getElementById('dailyRewardPopup').classList.remove('show');
         
         // Show confirmation
-        this.showMessage(`Daily Reward Claimed! 💎 +${rewards.gems} Gems, 💀 +${rewards.kills} Kills`, '#ffd700');
+        this.showMessage(`Daily Reward Claimed! 💎 +${rewards.gems} Gems`, '#ffd700');
         this.playSound('achievement');
         
         // Update UI
@@ -2821,12 +3805,576 @@ class TowerDefenseGame {
         this.tower.damage = damage;
         this.clickDamage = clickDamage;
         this.gold = gold;
+
+        // Reset other baseline combat knobs so equipped relic bonuses don't stack
+        // (applyPermanentBonuses can run multiple times via UI actions).
+        this.tower.range = 120;
+        this.tower.fireRate = 1000;
+        this.tower.maxTargets = 1;
+        this.tower.chainLightning = 0;
+        this.tower.chainRange = 80;
+        this.clickStrikeRadius = 50;
+
+        this.abilities.emp.cooldownMs = this.baseAbilityCooldowns.emp;
+        this.abilities.overcharge.cooldownMs = this.baseAbilityCooldowns.overcharge;
         
         // Store multipliers for other systems
         this.goldMultiplier = goldMultiplier;
         this.xpMultiplier = 1 + (this.permStats.gemUpgrades.xpMultiplier * 0.15);
         this.critChance = this.permStats.gemUpgrades.critChance * 0.05; // 5% per level
         this.healthRegen = this.permStats.gemUpgrades.healthRegen; // 1 HP per 5 seconds per level
+
+        // Apply equipped relic bonuses (additive on top of permanent bonuses)
+        this.applyEquippedRelicBonuses();
+    }
+
+    getRelicCatalog() {
+        return {
+            coil_polished: {
+                name: 'Polished Coil',
+                desc: '+10% Tower Damage.'
+            },
+            capacitor_long_arc: {
+                name: 'Long-Arc Capacitor',
+                desc: '+25 Tower Range.'
+            },
+            emitter_rapid: {
+                name: 'Rapid Emitter',
+                desc: 'Tower attacks 8% faster.'
+            },
+            grounding_rod: {
+                name: 'Grounding Rod',
+                desc: '+1 Chain Lightning jump and +15 chain range.'
+            },
+            focusing_lens: {
+                name: 'Focusing Lens',
+                desc: 'Click lightning is tighter (−20% strike radius).' 
+            },
+            arc_battery: {
+                name: 'Arc Battery',
+                desc: '+15% Gold earned.'
+            },
+            stun_dynamo: {
+                name: 'Stun Dynamo',
+                desc: '+6% Slow chance on tower hits.'
+            },
+            overclock_module: {
+                name: 'Overclock Module',
+                desc: 'Abilities recharge 12% faster.'
+            }
+        };
+    }
+
+    getRelicDescription(relicId, levelOverride = null) {
+        const level = Math.max(1, levelOverride ?? this.getRelicLevel(relicId));
+        const scale = 1 + 0.20 * (level - 1);
+
+        const pct = (v) => `${Math.round(v * 100)}%`;
+        const int = (v) => `${Math.round(v)}`;
+
+        switch (relicId) {
+            case 'coil_polished':
+                return `+${pct(0.10 * scale)} Tower Damage.`;
+            case 'capacitor_long_arc':
+                return `+${int(25 * scale)} Tower Range.`;
+            case 'emitter_rapid': {
+                const faster = Math.min(0.45, 0.08 * scale);
+                return `Tower attacks ${pct(faster)} faster.`;
+            }
+            case 'grounding_rod': {
+                const chainAdd = 1 + Math.floor((level - 1) / 3);
+                return `+${chainAdd} Chain jump${chainAdd === 1 ? '' : 's'} and +${int(15 * scale)} chain range.`;
+            }
+            case 'focusing_lens': {
+                const tighter = Math.min(0.65, 0.20 * scale);
+                return `Click lightning is tighter (−${pct(tighter)} strike radius).`;
+            }
+            case 'arc_battery':
+                return `+${pct(0.15 * scale)} Gold earned.`;
+            case 'stun_dynamo':
+                return `+${pct(0.06 * scale)} Slow chance on tower hits.`;
+            case 'overclock_module': {
+                const faster = Math.min(0.60, 0.12 * scale);
+                return `Abilities recharge ${pct(faster)} faster.`;
+            }
+            default: {
+                const catalog = this.getRelicCatalog();
+                return catalog[relicId]?.desc || '';
+            }
+        }
+    }
+
+    getEquippedRelicIds() {
+        const equipped = this.permStats?.relics?.equipped;
+        if (!Array.isArray(equipped)) return [];
+        return equipped.filter(Boolean);
+    }
+
+    getRelicLevel(relicId) {
+        const levels = this.permStats?.relics?.levels;
+        const level = levels && typeof levels === 'object' ? levels[relicId] : 1;
+        return Math.max(1, Number.isFinite(level) ? level : 1);
+    }
+
+    getRelicUpgradeCost(currentLevel) {
+        // Level 1 -> 2: 20, then ramps by +15 each level
+        return 20 + Math.max(0, currentLevel - 1) * 15;
+    }
+
+    upgradeRelic(relicId) {
+        const MAX_LEVEL = 5;
+        const relics = this.permStats?.relics;
+        if (!relics || !Array.isArray(relics.owned)) return;
+        if (!relics.owned.includes(relicId)) return;
+
+        if (!relics.levels || typeof relics.levels !== 'object') relics.levels = {};
+        const currentLevel = this.getRelicLevel(relicId);
+        if (currentLevel >= MAX_LEVEL) {
+            this.showMessage('Relic is already max level.', '#ffaa00');
+            return;
+        }
+
+        const cost = this.getRelicUpgradeCost(currentLevel);
+        if ((relics.shards || 0) < cost) {
+            this.showMessage(`Not enough shards. Need ${cost}.`, '#ff5555');
+            return;
+        }
+
+        relics.shards -= cost;
+        relics.levels[relicId] = currentLevel + 1;
+        this.savePermanentStats();
+
+        // Avoid resetting current-run combat stats while a run is active.
+        const inRun = this.isGameStarted && !this.isGameOver;
+        if (!inRun) {
+            this.applyPermanentBonuses();
+            this.updateUI();
+        }
+        this.updateRelicsPanel();
+        this.playSound('achievement');
+        this.showMessage(inRun ? 'Relic upgraded! (Applies next run)' : 'Relic upgraded!', 'rgba(255,255,255,0.9)');
+    }
+
+    computeEquippedRelicBonuses() {
+        const ids = this.getEquippedRelicIds();
+        const bonuses = {
+            damageMult: 0,
+            rangeAdd: 0,
+            fireRateMult: 1,
+            chainAdd: 0,
+            chainRangeAdd: 0,
+            clickRadiusMult: 1,
+            goldMult: 0,
+            slowChanceAdd: 0,
+            abilityCooldownMult: 1
+        };
+
+        ids.forEach(id => {
+            const level = this.getRelicLevel(id);
+            const scale = 1 + 0.20 * (level - 1);
+            switch (id) {
+                case 'coil_polished':
+                    bonuses.damageMult += 0.10 * scale;
+                    break;
+                case 'capacitor_long_arc':
+                    bonuses.rangeAdd += Math.round(25 * scale);
+                    break;
+                case 'emitter_rapid':
+                    bonuses.fireRateMult *= (1 - Math.min(0.45, 0.08 * scale));
+                    break;
+                case 'grounding_rod':
+                    bonuses.chainAdd += 1 + Math.floor((level - 1) / 3);
+                    bonuses.chainRangeAdd += Math.round(15 * scale);
+                    break;
+                case 'focusing_lens':
+                    bonuses.clickRadiusMult *= (1 - Math.min(0.65, 0.20 * scale));
+                    break;
+                case 'arc_battery':
+                    bonuses.goldMult += 0.15 * scale;
+                    break;
+                case 'stun_dynamo':
+                    bonuses.slowChanceAdd += 0.06 * scale;
+                    break;
+                case 'overclock_module':
+                    bonuses.abilityCooldownMult *= (1 - Math.min(0.60, 0.12 * scale));
+                    break;
+            }
+        });
+
+        return bonuses;
+    }
+
+    applyEquippedRelicBonuses() {
+        const b = this.computeEquippedRelicBonuses();
+
+        // Core combat
+        if (b.damageMult) this.tower.damage = Math.max(1, Math.floor(this.tower.damage * (1 + b.damageMult)));
+        if (b.rangeAdd) this.tower.range += b.rangeAdd;
+        if (b.fireRateMult !== 1) this.tower.fireRate = Math.max(120, Math.floor(this.tower.fireRate * b.fireRateMult));
+
+        // Chains
+        if (b.chainAdd) this.tower.chainLightning += b.chainAdd;
+        if (b.chainRangeAdd) this.tower.chainRange += b.chainRangeAdd;
+
+        // Click tightening
+        if (b.clickRadiusMult !== 1) {
+            this.clickStrikeRadius = Math.max(10, Math.floor(this.clickStrikeRadius * b.clickRadiusMult));
+        }
+
+        // Economy
+        if (b.goldMult) this.goldMultiplier *= (1 + b.goldMult);
+
+        // Status config
+        if (b.slowChanceAdd) this.statusConfig.slowChance = Math.min(1, (this.statusConfig.slowChance || 0) + b.slowChanceAdd);
+
+        // Ability cooldown
+        this.abilities.emp.cooldownMs = Math.floor(this.baseAbilityCooldowns.emp * b.abilityCooldownMult);
+        this.abilities.overcharge.cooldownMs = Math.floor(this.baseAbilityCooldowns.overcharge * b.abilityCooldownMult);
+    }
+
+    openRelicsPanel() {
+        const backdrop = document.getElementById('relicsBackdrop');
+        const panel = document.getElementById('relicsPanel');
+        if (!backdrop || !panel) return;
+        backdrop.classList.add('active');
+        panel.classList.add('active');
+        this.updateRelicsPanel();
+    }
+
+    closeRelicsPanel() {
+        const backdrop = document.getElementById('relicsBackdrop');
+        const panel = document.getElementById('relicsPanel');
+        if (!backdrop || !panel) return;
+        backdrop.classList.remove('active');
+        panel.classList.remove('active');
+    }
+
+    updateRelicsPanel() {
+        const slotsEl = document.getElementById('relicSlots');
+        const gridEl = document.getElementById('relicGrid');
+        const metaEl = document.getElementById('relicsMeta');
+        if (!slotsEl || !gridEl) return;
+
+        const catalog = this.getRelicCatalog();
+        const owned = new Set(this.permStats.relics.owned || []);
+        const equipped = this.permStats.relics.equipped || [null, null, null];
+
+        if (metaEl) {
+            const shards = Math.max(0, Math.floor(this.permStats.relics.shards || 0));
+            metaEl.textContent = `🔹 Shards: ${shards} (duplicates convert to shards)`;
+        }
+
+        // Slots
+        slotsEl.innerHTML = '';
+        for (let i = 0; i < 3; i++) {
+            const id = equipped[i];
+            const slot = document.createElement('div');
+            slot.className = 'relic-slot';
+            slot.innerHTML = `
+                <div class="slot-label">Slot ${i + 1}</div>
+                <div class="slot-name">${id && catalog[id] ? catalog[id].name : '— Empty —'}</div>
+            `;
+            slotsEl.appendChild(slot);
+        }
+
+        // Grid
+        gridEl.innerHTML = '';
+        Object.keys(catalog).forEach(id => {
+            const data = catalog[id];
+            const isOwned = owned.has(id);
+            const isEquipped = equipped.includes(id);
+            const level = isOwned ? this.getRelicLevel(id) : 0;
+            const MAX_LEVEL = 5;
+
+            const descText = isOwned
+                ? this.getRelicDescription(id, level)
+                : 'Defeat bosses to discover this relic.';
+
+            const card = document.createElement('div');
+            card.className = `relic-card${isOwned ? ' owned' : ''}`;
+            card.innerHTML = `
+                <div class="relic-name">${isOwned ? '🧿 ' : '🔒 '}${data.name}</div>
+                ${isOwned ? `<div class="relic-level">Level ${level}${level >= MAX_LEVEL ? ' (Max)' : ''}</div>` : ''}
+                <div class="relic-desc">${descText}</div>
+            `;
+
+            const actions = document.createElement('div');
+            actions.className = 'relic-actions';
+
+            const equipBtn = document.createElement('button');
+            equipBtn.className = 'relic-btn';
+            equipBtn.textContent = isEquipped ? 'UNEQUIP' : 'EQUIP';
+            equipBtn.disabled = !isOwned;
+            if (!isOwned) {
+                equipBtn.style.opacity = '0.55';
+                equipBtn.style.cursor = 'not-allowed';
+            }
+            equipBtn.addEventListener('click', () => {
+                if (!isOwned) return;
+                if (isEquipped) {
+                    this.unequipRelic(id);
+                } else {
+                    this.equipRelic(id);
+                }
+                this.savePermanentStats();
+                this.updateRelicsPanel();
+
+                // Prevent mid-run stat resets (applyPermanentBonuses resets tower stats).
+                const inRun = this.isGameStarted && !this.isGameOver;
+                if (!inRun) {
+                    this.applyPermanentBonuses();
+                    this.updateUI();
+                } else {
+                    this.showMessage('Relic loadout saved (applies next run).', 'rgba(255,255,255,0.85)');
+                }
+            });
+
+            const hintBtn = document.createElement('button');
+            hintBtn.className = 'relic-btn secondary';
+            hintBtn.textContent = 'INFO';
+            hintBtn.addEventListener('click', () => {
+                const msg = `${data.name}: ${data.desc}`;
+                this.showMessage(msg, 'rgba(255,255,255,0.9)');
+            });
+
+            const upgradeBtn = document.createElement('button');
+            upgradeBtn.className = 'relic-btn secondary';
+            if (!isOwned) {
+                upgradeBtn.textContent = 'UPGRADE';
+                upgradeBtn.disabled = true;
+                upgradeBtn.style.opacity = '0.55';
+                upgradeBtn.style.cursor = 'not-allowed';
+            } else if (level >= MAX_LEVEL) {
+                upgradeBtn.textContent = 'MAX';
+                upgradeBtn.disabled = true;
+                upgradeBtn.style.opacity = '0.65';
+                upgradeBtn.style.cursor = 'not-allowed';
+            } else {
+                const cost = this.getRelicUpgradeCost(level);
+                upgradeBtn.textContent = `UPGRADE (${cost})`;
+                upgradeBtn.addEventListener('click', () => this.upgradeRelic(id));
+            }
+
+            actions.appendChild(equipBtn);
+            actions.appendChild(hintBtn);
+            actions.appendChild(upgradeBtn);
+            card.appendChild(actions);
+            gridEl.appendChild(card);
+        });
+    }
+
+    equipRelic(relicId) {
+        const equipped = this.permStats.relics.equipped;
+        // If already equipped, no-op
+        if (equipped.includes(relicId)) return;
+
+        // Put into first empty slot
+        const emptyIndex = equipped.findIndex(v => !v);
+        if (emptyIndex !== -1) {
+            equipped[emptyIndex] = relicId;
+            return;
+        }
+
+        // If full, replace slot 1 by default (simple behavior)
+        equipped[0] = relicId;
+    }
+
+    unequipRelic(relicId) {
+        const equipped = this.permStats.relics.equipped;
+        for (let i = 0; i < equipped.length; i++) {
+            if (equipped[i] === relicId) equipped[i] = null;
+        }
+    }
+
+    maybeOfferRelicDrop(fromZombie) {
+        if (this.relicDropState.active) return;
+        if (!fromZombie || !fromZombie.isBoss || fromZombie.isMiniBoss) return;
+
+        // Offer on boss waves (every 5 waves). Limit to once per wave.
+        if (this.wave % 5 !== 0) return;
+        if (this.relicDropState.waveOffered === this.wave) return;
+
+        // If the UI isn't available (e.g., cached older HTML), don't activate relic-drop state.
+        const backdrop = document.getElementById('relicDropBackdrop');
+        const panel = document.getElementById('relicDropPanel');
+        const optionsEl = document.getElementById('relicDropOptions');
+        const subtitleEl = document.getElementById('relicDropSubtitle');
+        if (!backdrop || !panel || !optionsEl || !subtitleEl) return;
+
+        // Ensure save data shape exists (can be missing on older/partial saves)
+        if (!this.permStats || typeof this.permStats !== 'object') return;
+        if (!this.permStats.relics || typeof this.permStats.relics !== 'object') {
+            this.permStats.relics = { owned: [], equipped: [null, null, null], shards: 0, levels: {} };
+        }
+        if (!Array.isArray(this.permStats.relics.owned)) this.permStats.relics.owned = [];
+        if (!Array.isArray(this.permStats.relics.equipped) || this.permStats.relics.equipped.length !== 3) {
+            this.permStats.relics.equipped = [null, null, null];
+        }
+        if (typeof this.permStats.relics.shards !== 'number') this.permStats.relics.shards = 0;
+        if (!this.permStats.relics.levels || typeof this.permStats.relics.levels !== 'object') this.permStats.relics.levels = {};
+
+        const catalog = this.getRelicCatalog();
+        const owned = new Set(this.permStats.relics.owned || []);
+        const allIds = Object.keys(catalog);
+        const lockedPool = allIds.filter(id => !owned.has(id));
+        const ownedPool = allIds.filter(id => owned.has(id));
+
+        // Prefer new relics, but allow owned relics to appear (shards) so drops stay meaningful.
+        const options = [];
+        while (options.length < 3 && lockedPool.length) {
+            const pick = lockedPool.splice(Math.floor(Math.random() * lockedPool.length), 1)[0];
+            options.push(pick);
+        }
+        while (options.length < 3 && ownedPool.length) {
+            const pick = ownedPool.splice(Math.floor(Math.random() * ownedPool.length), 1)[0];
+            options.push(pick);
+        }
+
+        if (!options.length) return;
+
+        this.relicDropState = { active: true, waveOffered: this.wave, options };
+        try {
+            this.openRelicDropPanel();
+        } catch (e) {
+            console.error('Relic drop UI failed to open:', e);
+            this.relicDropState.active = false;
+            this.isPaused = false;
+            // Best-effort cleanup in case classes were partially applied
+            document.getElementById('relicDropBackdrop')?.classList?.remove('active');
+            document.getElementById('relicDropPanel')?.classList?.remove('active');
+        }
+    }
+
+    openRelicDropPanel() {
+        const backdrop = document.getElementById('relicDropBackdrop');
+        const panel = document.getElementById('relicDropPanel');
+        const optionsEl = document.getElementById('relicDropOptions');
+        const subtitleEl = document.getElementById('relicDropSubtitle');
+        if (!backdrop || !panel || !optionsEl || !subtitleEl) {
+            // Roll back active state so we can retry next boss if UI is unavailable.
+            this.relicDropState.active = false;
+            return;
+        }
+
+        if (!this.relicDropState || !Array.isArray(this.relicDropState.options) || this.relicDropState.options.length === 0) {
+            this.relicDropState.active = false;
+            return;
+        }
+
+        const catalog = this.getRelicCatalog();
+        const owned = new Set(this.permStats.relics.owned || []);
+
+        subtitleEl.textContent = 'Choose 1 relic. Owned relics convert to shards.';
+        optionsEl.innerHTML = '';
+
+        // Make it obvious this is intentional (not a freeze)
+        this.showNarration('🧿 RELIC DROP! Choose one.', 2200);
+
+        this.isPaused = true;
+        this.relicDropOpenedAt = Date.now();
+        backdrop.classList.add('active');
+        panel.classList.add('active');
+
+        this.relicDropState.options.forEach(id => {
+            const data = catalog[id];
+            if (!data) return;
+            const btn = document.createElement('button');
+            btn.className = 'upgrade-option';
+            const ownedTag = owned.has(id) ? ' (Owned)' : '';
+            const descText = this.getRelicDescription(id, owned.has(id) ? this.getRelicLevel(id) : 1);
+            btn.innerHTML = `
+                <div class="upgrade-icon">🧿</div>
+                <div class="upgrade-name">${data.name}${ownedTag}</div>
+                <div class="upgrade-desc">${descText}</div>
+                <div class="upgrade-cost">Boss Reward</div>
+            `;
+            btn.addEventListener('click', () => {
+                this.claimRelic(id);
+            });
+            optionsEl.appendChild(btn);
+        });
+    }
+
+    closeRelicDropPanel() {
+        // Always unpause even if DOM is missing (prevents "stuck freeze")
+        this.relicDropState.active = false;
+        this.isPaused = false;
+        this.relicDropOpenedAt = 0;
+
+        const backdrop = document.getElementById('relicDropBackdrop');
+        const panel = document.getElementById('relicDropPanel');
+        backdrop?.classList?.remove('active');
+        panel?.classList?.remove('active');
+    }
+
+    ensureRelicDropNotStuck(currentTime) {
+        if (!this.relicDropState || !this.relicDropState.active) return;
+
+        const backdrop = document.getElementById('relicDropBackdrop');
+        const panel = document.getElementById('relicDropPanel');
+
+        // If the DOM disappeared (cached/partial UI), immediately recover.
+        if (!backdrop || !panel) {
+            this.relicDropState.active = false;
+            this.isPaused = false;
+            return;
+        }
+
+        const isShowing = backdrop.classList.contains('active') && panel.classList.contains('active');
+        if (!isShowing) {
+            try {
+                this.openRelicDropPanel();
+            } catch (e) {
+                console.error('Relic drop re-open failed:', e);
+                this.relicDropState.active = false;
+                this.isPaused = false;
+                return;
+            }
+        }
+
+        // If somehow stuck for too long, auto-skip to keep the run alive.
+        const openedAt = this.relicDropOpenedAt || 0;
+        if (openedAt && Date.now() - openedAt > 15000) {
+            this.showMessage('Relic drop skipped (UI issue).', '#ffaa00');
+            this.closeRelicDropPanel();
+        }
+    }
+
+    claimRelic(relicId) {
+        const catalog = this.getRelicCatalog();
+        const data = catalog[relicId];
+        if (!data) return;
+
+        if (!this.permStats.relics || typeof this.permStats.relics !== 'object') {
+            this.permStats.relics = { owned: [], equipped: [null, null, null], shards: 0, levels: {} };
+        }
+        if (typeof this.permStats.relics.shards !== 'number') this.permStats.relics.shards = 0;
+        if (!this.permStats.relics.levels || typeof this.permStats.relics.levels !== 'object') this.permStats.relics.levels = {};
+
+        const owned = this.permStats.relics.owned;
+        if (!owned.includes(relicId)) {
+            owned.push(relicId);
+            if (this.permStats.relics.levels[relicId] == null) this.permStats.relics.levels[relicId] = 1;
+
+            // Small shard grant so upgrading is possible before all relics are collected.
+            const shardGain = 6;
+            this.permStats.relics.shards += shardGain;
+            // Auto-equip into an empty slot if available
+            const equipped = this.permStats.relics.equipped;
+            if (Array.isArray(equipped) && equipped.some(v => !v)) {
+                this.equipRelic(relicId);
+            }
+
+            this.showMessage(`🧿 Relic Unlocked: ${data.name}! +${shardGain} Shards (Next run)`, 'rgba(255,255,255,0.95)');
+            this.playSound('achievement');
+        } else {
+            const shardGain = 12;
+            this.permStats.relics.shards += shardGain;
+            this.showMessage(`🧿 Duplicate Relic: +${shardGain} Shards`, 'rgba(255,255,255,0.85)');
+        }
+
+        this.savePermanentStats();
+        this.closeRelicDropPanel();
     }
     
     applyTheme(themeName = null) {
@@ -2939,137 +4487,115 @@ class TowerDefenseGame {
         // Create audio context
         this.audioContext = null;
         this.soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+        this.audioContextInitialized = false;
         
-        // Initialize audio context on first user interaction
-        document.addEventListener('click', () => {
-            if (!this.audioContext) {
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // Initialize audio context on user interaction (required for mobile)
+        const initAudio = () => {
+            if (!this.audioContextInitialized) {
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    // Resume context immediately (required on iOS/Android)
+                    if (this.audioContext.state === 'suspended') {
+                        this.audioContext.resume();
+                    }
+
+                    // Master gain for volume + shared routing
+                    this.masterGain = this.audioContext.createGain();
+                    this.masterGain.gain.value = (Math.max(0, Math.min(100, Number(this.settings?.volume ?? 50))) / 100);
+                    this.masterGain.connect(this.audioContext.destination);
+
+                    this.audioContextInitialized = true;
+
+                    // Start/stop background hum based on settings
+                    this.updateBackgroundHum();
+                    console.log('Audio initialized successfully');
+                } catch (e) {
+                    console.error('Audio initialization failed:', e);
+                }
             }
-        }, { once: true });
+        };
         
-        // Initialize Text-to-Speech
-        this.initTTS();
+        // Listen to multiple events for better mobile compatibility
+        ['click', 'touchstart', 'pointerdown'].forEach(event => {
+            document.addEventListener(event, initAudio, { passive: true });
+        });
     }
-    
-    initTTS() {
-        // Check if browser supports speech synthesis
-        if ('speechSynthesis' in window) {
-            this.ttsEnabled = localStorage.getItem('ttsEnabled') !== 'false';
-            this.ttsVoice = null;
-            console.log('TTS initialized. Enabled:', this.ttsEnabled);
-            
-            // Load voices when they become available
-            const loadVoices = () => {
-                const voices = speechSynthesis.getVoices();
-                console.log('Available voices:', voices.length);
-                
-                // Priority list for high-quality voices (in order of preference)
-                const voicePriority = [
-                    // Chrome/Edge premium voices
-                    v => v.name.includes('Google US English') || v.name.includes('Google UK English'),
-                    // Microsoft natural voices (Windows 11+)
-                    v => v.name.includes('Microsoft') && (v.name.includes('Aria') || v.name.includes('Guy') || v.name.includes('Jenny')),
-                    // Apple premium voices
-                    v => v.name.includes('Samantha') || v.name.includes('Alex'),
-                    // Any Google voice
-                    v => v.name.includes('Google') && v.lang.startsWith('en'),
-                    // Any Microsoft natural voice
-                    v => v.name.includes('Microsoft') && v.lang.startsWith('en') && !v.name.includes('Zira') && !v.name.includes('David'),
-                    // Any Apple voice
-                    v => v.name.includes('Apple') && v.lang.startsWith('en'),
-                    // Any English voice
-                    v => v.lang.startsWith('en')
-                ];
-                
-                // Try each priority until we find a voice
-                for (const priorityCheck of voicePriority) {
-                    this.ttsVoice = voices.find(priorityCheck);
-                    if (this.ttsVoice) break;
-                }
-                
-                // Fallback to first available voice
-                if (!this.ttsVoice && voices.length > 0) {
-                    this.ttsVoice = voices[0];
-                }
-                
-                if (this.ttsVoice) {
-                    console.log('Selected voice:', this.ttsVoice.name, this.ttsVoice.lang);
-                    console.log('Voice local:', this.ttsVoice.localService ? 'Local' : 'Network');
-                } else {
-                    console.warn('No voice selected');
-                }
-            };
-            
-            // Some browsers load voices asynchronously
-            if (speechSynthesis.getVoices().length > 0) {
-                loadVoices();
-            } else {
-                speechSynthesis.addEventListener('voiceschanged', loadVoices);
-            }
-        } else {
-            this.ttsEnabled = false;
-            console.warn('Text-to-Speech not supported in this browser');
-        }
+
+    updateAudioGain() {
+        if (!this.audioContext || !this.masterGain) return;
+        const volume01 = Math.max(0, Math.min(1, (Number(this.settings?.volume ?? 50) / 100)));
+        this.masterGain.gain.value = volume01;
     }
-    
-    speak(text, options = {}) {
-        // Check if TTS is available and enabled
-        if (!('speechSynthesis' in window)) {
-            console.warn('Speech Synthesis not supported');
-            return;
-        }
-        
-        if (!this.ttsEnabled) {
-            console.log('TTS disabled by user');
-            return;
-        }
-        
-        console.log('🗣️ Speaking:', text);
-        
-        // Cancel any ongoing speech
-        speechSynthesis.cancel();
-        
-        const utterance = new SpeechSynthesisUtterance(text);
-        
-        // Set voice if available
-        if (this.ttsVoice) {
-            utterance.voice = this.ttsVoice;
-        }
-        
-        // Configure speech parameters
-        utterance.rate = options.rate || 1.0; // Speed (0.1 to 10)
-        utterance.pitch = options.pitch || 1.0; // Pitch (0 to 2)
-        utterance.volume = options.volume || 1.0; // Volume (0 to 1)
-        
-        // Add error handling
-        utterance.onerror = (event) => {
-            console.error('Speech error:', event);
-        };
-        
-        utterance.onstart = () => {
-            console.log('Speech started');
-        };
-        
-        utterance.onend = () => {
-            console.log('Speech ended');
-        };
-        
-        // Speak
+
+    stopBackgroundHum() {
+        if (!this.audioContext) return;
+
         try {
-            speechSynthesis.speak(utterance);
-        } catch (error) {
-            console.error('Error speaking:', error);
+            if (this.musicGain) {
+                const now = this.audioContext.currentTime;
+                this.musicGain.gain.cancelScheduledValues(now);
+                this.musicGain.gain.setValueAtTime(this.musicGain.gain.value, now);
+                this.musicGain.gain.linearRampToValueAtTime(0, now + 0.15);
+            }
+        } catch (e) {
+            // ignore
         }
+
+        try {
+            if (this.musicOsc) {
+                const stopAt = this.audioContext.currentTime + 0.18;
+                this.musicOsc.stop(stopAt);
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        try { this.musicOsc && this.musicOsc.disconnect(); } catch (e) { /* ignore */ }
+        try { this.musicGain && this.musicGain.disconnect(); } catch (e) { /* ignore */ }
+        this.musicOsc = null;
+        this.musicGain = null;
     }
-    
-    toggleTTS() {
-        this.ttsEnabled = !this.ttsEnabled;
-        localStorage.setItem('ttsEnabled', this.ttsEnabled);
-        this.showMessage(this.ttsEnabled ? 'Voice ON 🗣️' : 'Voice OFF 🔇', this.ttsEnabled ? '#00ff00' : '#ff0000');
-        
-        if (this.ttsEnabled) {
-            this.speak('Voice announcements enabled');
+
+    startBackgroundHum() {
+        if (!this.audioContext || !this.masterGain) return;
+        if (this.musicOsc && this.musicGain) return;
+
+        const ctx = this.audioContext;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.value = 58;
+        gain.gain.value = 0;
+
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+
+        const now = ctx.currentTime;
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.02, now + 0.25);
+
+        osc.start(now);
+
+        this.musicOsc = osc;
+        this.musicGain = gain;
+    }
+
+    updateBackgroundHum() {
+        const enabled = !!this.settings?.musicEnabled;
+        const soundOn = !!this.soundEnabled;
+
+        if (!enabled || !soundOn) {
+            this.stopBackgroundHum();
+            return;
         }
+
+        if (!this.audioContext || !this.audioContextInitialized) return;
+
+        // If the context is suspended, it will resume on the next user gesture.
+        if (this.audioContext.state === 'suspended') return;
+
+        this.startBackgroundHum();
     }
     
     toggleSound() {
@@ -3077,6 +4603,9 @@ class TowerDefenseGame {
         localStorage.setItem('soundEnabled', this.soundEnabled);
         document.getElementById('soundToggle').textContent = this.soundEnabled ? '🔊' : '🔇';
         this.showMessage(this.soundEnabled ? 'Sound ON' : 'Sound OFF', this.soundEnabled ? '#00ff00' : '#ff0000');
+
+        // Hum follows sound enabled
+        this.updateBackgroundHum();
     }
     
     cycleGameSpeed() {
@@ -3258,6 +4787,7 @@ class TowerDefenseGame {
         if (!this.soundEnabled || !this.audioContext) return;
         
         const ctx = this.audioContext;
+        const out = this.masterGain || ctx.destination;
         const now = ctx.currentTime;
         
         switch(type) {
@@ -3266,7 +4796,7 @@ class TowerDefenseGame {
                 const osc1 = ctx.createOscillator();
                 const gain1 = ctx.createGain();
                 osc1.connect(gain1);
-                gain1.connect(ctx.destination);
+                gain1.connect(out);
                 
                 osc1.frequency.setValueAtTime(800, now);
                 osc1.frequency.exponentialRampToValueAtTime(200, now + 0.1);
@@ -3282,7 +4812,7 @@ class TowerDefenseGame {
                 const osc2 = ctx.createOscillator();
                 const gain2 = ctx.createGain();
                 osc2.connect(gain2);
-                gain2.connect(ctx.destination);
+                gain2.connect(out);
                 
                 osc2.frequency.setValueAtTime(100, now);
                 osc2.frequency.exponentialRampToValueAtTime(50, now + 0.15);
@@ -3298,7 +4828,7 @@ class TowerDefenseGame {
                 const osc3 = ctx.createOscillator();
                 const gain3 = ctx.createGain();
                 osc3.connect(gain3);
-                gain3.connect(ctx.destination);
+                gain3.connect(out);
                 
                 osc3.type = 'sawtooth';
                 osc3.frequency.setValueAtTime(300, now);
@@ -3315,7 +4845,7 @@ class TowerDefenseGame {
                 const osc4 = ctx.createOscillator();
                 const gain4 = ctx.createGain();
                 osc4.connect(gain4);
-                gain4.connect(ctx.destination);
+                gain4.connect(out);
                 
                 osc4.frequency.setValueAtTime(800, now);
                 osc4.frequency.setValueAtTime(1200, now + 0.05);
@@ -3331,7 +4861,7 @@ class TowerDefenseGame {
                 const osc5 = ctx.createOscillator();
                 const gain5 = ctx.createGain();
                 osc5.connect(gain5);
-                gain5.connect(ctx.destination);
+                gain5.connect(out);
                 
                 osc5.frequency.setValueAtTime(400, now);
                 osc5.frequency.setValueAtTime(600, now + 0.05);
@@ -3348,7 +4878,7 @@ class TowerDefenseGame {
                 const osc6 = ctx.createOscillator();
                 const gain6 = ctx.createGain();
                 osc6.connect(gain6);
-                gain6.connect(ctx.destination);
+                gain6.connect(out);
                 
                 osc6.type = 'square';
                 osc6.frequency.setValueAtTime(200, now);
@@ -3369,7 +4899,7 @@ class TowerDefenseGame {
                 const gain7 = ctx.createGain();
                 osc7a.connect(gain7);
                 osc7b.connect(gain7);
-                gain7.connect(ctx.destination);
+                gain7.connect(out);
                 
                 osc7a.frequency.setValueAtTime(523, now); // C5
                 osc7b.frequency.setValueAtTime(659, now); // E5
@@ -3389,7 +4919,7 @@ class TowerDefenseGame {
                 const osc8 = ctx.createOscillator();
                 const gain8 = ctx.createGain();
                 osc8.connect(gain8);
-                gain8.connect(ctx.destination);
+                gain8.connect(out);
                 
                 osc8.type = 'triangle';
                 osc8.frequency.setValueAtTime(400, now);
@@ -3500,9 +5030,6 @@ class TowerDefenseGame {
         // Show narration
         this.showNarration('🏆 ACHIEVEMENT UNLOCKED! 🏆', 3000);
         
-        // Speak achievement name with excitement
-        this.speak(`Achievement unlocked! ${achievement.name}`, { rate: 0.95, pitch: 1.05, volume: 1.0 });
-        
         const gemReward = achievement.gemReward || 0;
         const popup = document.createElement('div');
         popup.className = 'achievement-popup';
@@ -3528,8 +5055,22 @@ class TowerDefenseGame {
     }
     
     savePermanentStats() {
-        // Save permanent stats for current slot
-        localStorage.setItem(`teslaTowerPermanent_slot${this.currentSlot}`, JSON.stringify(this.permStats));
+        // Save permanent stats for current slot with quota management
+        try {
+            const data = JSON.stringify(this.permStats);
+            // Warn if data is getting large (>4MB could cause issues on mobile)
+            if (data.length > 4 * 1024 * 1024) {
+                console.warn('Save data is large:', Math.round(data.length / 1024), 'KB');
+            }
+            localStorage.setItem(`teslaTowerPermanent_slot${this.currentSlot}`, data);
+        } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+                alert('Storage full! Please clear some save slots or use the "Clear All Data" option in Settings.');
+                console.error('Storage quota exceeded');
+            } else {
+                console.error('Save failed:', e);
+            }
+        }
     }
     
     openPermUpgradesPanel() {
@@ -4312,6 +5853,7 @@ class TowerDefenseGame {
             this.settings = {
                 volume: 50,
                 soundEnabled: true,
+                musicEnabled: false,
                 graphicsQuality: 'medium',
                 particlesEnabled: true,
                 screenShakeEnabled: true
@@ -4352,15 +5894,19 @@ class TowerDefenseGame {
             soundBtn.textContent = 'OFF';
         }
         
-        // Update voice toggle
-        const voiceBtn = document.getElementById('voiceToggleBtn');
-        if (this.ttsEnabled) {
-            voiceBtn.classList.remove('off');
-            voiceBtn.textContent = 'ON';
-        } else {
-            voiceBtn.classList.add('off');
-            voiceBtn.textContent = 'OFF';
+        // Update music toggle
+        const musicBtn = document.getElementById('musicToggleBtn');
+        if (musicBtn) {
+            if (this.settings.musicEnabled) {
+                musicBtn.classList.remove('off');
+                musicBtn.textContent = 'ON';
+            } else {
+                musicBtn.classList.add('off');
+                musicBtn.textContent = 'OFF';
+            }
         }
+
+        // (TTS removed)
         
         // Update graphics
         document.getElementById('graphicsSelect').value = this.settings.graphicsQuality;
@@ -4390,13 +5936,14 @@ class TowerDefenseGame {
         // Get values from UI
         this.settings.volume = parseInt(document.getElementById('volumeSlider').value);
         this.settings.soundEnabled = !document.getElementById('soundToggleBtn').classList.contains('off');
-        this.ttsEnabled = !document.getElementById('voiceToggleBtn').classList.contains('off');
+        this.settings.musicEnabled = !document.getElementById('musicToggleBtn').classList.contains('off');
+        // (TTS removed)
         this.settings.graphicsQuality = document.getElementById('graphicsSelect').value;
         this.settings.particlesEnabled = !document.getElementById('particlesToggleBtn').classList.contains('off');
         this.settings.screenShakeEnabled = !document.getElementById('screenShakeToggleBtn').classList.contains('off');
         
         // Save settings
-        localStorage.setItem('ttsEnabled', this.ttsEnabled);
+        // (TTS removed)
         this.saveSettings();
         
         // Apply to game
@@ -4411,18 +5958,32 @@ class TowerDefenseGame {
     
     applySettingsToGame() {
         // Apply volume (affects sound system)
-        if (this.audioContext) {
-            // Volume would be applied through gain nodes if using Web Audio API
-        }
+        this.updateAudioGain();
         
         // Apply sound enabled
         this.soundEnabled = this.settings.soundEnabled;
+
+        // Apply background hum/music
+        this.updateBackgroundHum();
+
+        // Apply graphics/particles/screen shake
+        this.particlesEnabled = !!this.settings.particlesEnabled;
+        this.screenShakeEnabled = !!this.settings.screenShakeEnabled;
+
+        const quality = this.settings.graphicsQuality || 'medium';
+        const qualityMultiplier = quality === 'low' ? 0.6 : (quality === 'high' ? 1.4 : 1.0);
+        this.maxParticles = Math.max(10, Math.floor(this.baseMaxParticles * qualityMultiplier));
+        this.maxLightning = Math.max(3, Math.floor(this.baseMaxLightning * qualityMultiplier));
+
+        if (!this.particlesEnabled) {
+            this.particles.length = 0;
+            this.towerSparks.length = 0;
+            this.impactParticles.length = 0;
+        }
         
         // Update sound toggle button display
-        const soundToggle = document.getElementById('soundToggle');
-        if (soundToggle) {
-            soundToggle.textContent = this.soundEnabled ? '🔊' : '🔇';
-        }
+        if (!this.ui) this.cacheUIElements();
+        this.ui.soundToggle && (this.ui.soundToggle.textContent = this.soundEnabled ? '🔊' : '🔇');
     }
     
     // ==========================================
@@ -4452,7 +6013,7 @@ class TowerDefenseGame {
                     key === 'currentSlot' ||
                     key === 'gameSettings' ||
                     key === 'soundEnabled' ||
-                    key === 'ttsEnabled') {
+                    false) {
                     keysToRemove.push(key);
                 }
             }
@@ -4475,5 +6036,12 @@ class TowerDefenseGame {
 
 // Start game
 window.addEventListener('load', () => {
-    new TowerDefenseGame();
+    const game = new TowerDefenseGame();
+    // Hide loading screen after initialization
+    setTimeout(() => {
+        const loadingScreen = document.getElementById('loadingScreen');
+        if (loadingScreen) {
+            loadingScreen.classList.remove('active');
+        }
+    }, 500);
 });

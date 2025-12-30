@@ -3,12 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a1a">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="manifest.json">
     <title>⚡ Tesla Tower</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="loading-screen active">
+        <div class="loading-content">
+            <h1>⚡ TESLA TOWER ⚡</h1>
+            <div class="loading-spinner"></div>
+            <p>Loading...</p>
+        </div>
+    </div>
+    
     <div class="game-container">
         <!-- Header -->
         <div class="game-header">
@@ -29,6 +41,10 @@
                 <div class="stat">
                     <span class="stat-label">Tower HP:</span>
                     <span class="stat-value" id="towerHealth">100</span>
+                </div>
+                <div class="stat objective-stat">
+                    <span class="stat-label">Objective:</span>
+                    <span class="stat-value stat-value-small" id="runObjectiveText">—</span>
                 </div>
             </div>
         </div>
@@ -61,10 +77,16 @@
             <span class="speed-text">1x</span>
         </button>
 
+        <!-- Abilities Bar (bottom center) -->
+        <div class="abilities-bar" id="abilitiesBar">
+            <button class="ability-btn disabled" id="abilityEmpBtn">⚡ EMP</button>
+            <button class="ability-btn disabled" id="abilityOverchargeBtn">⚙ OVERCHARGE</button>
+        </div>
+
         <!-- Title Screen (shown on first load) -->
         <div class="title-screen active" id="titleScreen">
             <div class="title-content">
-                <h1 class="title-logo">⚡ TESLA TOWER DEFENSE ⚡</h1>
+                <h1 class="title-logo">⚡ TESLA TOWER ⚡</h1>
                 <p class="title-tagline">Defend Against the Undead Horde!</p>
                 
                 <div class="title-buttons">
@@ -124,6 +146,7 @@
                     <button class="menu-btn" id="loadGameBtn">LOAD GAME</button>
                     <button class="menu-btn" id="settingsBtn">⚙️ SETTINGS</button>
                     <button class="menu-btn gem-shop-btn" id="gemShopBtn">💎 SHOP & UPGRADES</button>
+                    <button class="menu-btn" id="relicsBtn">🧿 RELICS</button>
                     <button class="menu-btn" id="themesBtn">🎨 THEMES</button>
                     <button class="menu-btn" id="statsBtn">STATISTICS</button>
                     <button class="menu-btn" id="achievementsBtn">ACHIEVEMENTS</button>
@@ -132,6 +155,21 @@
                     <button class="menu-btn" id="leaderboardsBtn">LEADERBOARDS</button>
                     <button class="menu-btn logout-btn" id="logoutBtn">NEW PLAYER</button>
                 </div>
+            </div>
+        </div>
+
+        <!-- Relics Panel -->
+        <div class="panel-backdrop" id="relicsBackdrop"></div>
+        <div class="panel" id="relicsPanel">
+            <div class="panel-content">
+                <button class="close-btn" id="closeRelics">✖</button>
+                <h2 style="text-align: center; margin-bottom: 10px;">🧿 RELICS 🧿</h2>
+                <p style="text-align: center; color: rgba(255,255,255,0.75); margin-bottom: 14px;">Equip up to 3 relics. Bosses can drop new relics.</p>
+
+                <div class="relics-meta" id="relicsMeta"></div>
+
+                <div class="relics-slots" id="relicSlots"></div>
+                <div class="relics-grid" id="relicGrid"></div>
             </div>
         </div>
 
@@ -263,6 +301,29 @@
                 <p>Zombies Killed: <span id="finalKills">0</span></p>
             </div>
             <button class="restart-btn" id="restartBtn">🔄 TRY AGAIN</button>
+        </div>
+
+        <!-- Between-wave Choice Panel -->
+        <div class="panel-backdrop" id="waveChoiceBackdrop"></div>
+        <div class="panel" id="waveChoicePanel">
+            <div class="panel-content">
+                <h2 style="text-align: center; margin-bottom: 10px;">🎲 CHOOSE ONE 🎲</h2>
+                <p class="wave-choice-subtitle" id="waveChoiceSubtitle"></p>
+                <div class="upgrade-options wave-choice-options" id="waveChoiceOptions"></div>
+            </div>
+        </div>
+
+        <!-- Relic Drop Panel (boss reward) -->
+        <div class="panel-backdrop" id="relicDropBackdrop"></div>
+        <div class="panel" id="relicDropPanel">
+            <div class="panel-content">
+                <div style="display:flex; align-items:center; justify-content:center; position:relative; margin-bottom:10px;">
+                    <h2 style="text-align: center; margin: 0;">🧿 RELIC FOUND 🧿</h2>
+                    <button class="close-btn" id="closeRelicDrop" style="position:absolute; right:0;">✖</button>
+                </div>
+                <p class="wave-choice-subtitle" id="relicDropSubtitle"></p>
+                <div class="upgrade-options wave-choice-options" id="relicDropOptions"></div>
+            </div>
         </div>
 
         <!-- Gem Shop Panel -->
@@ -657,8 +718,8 @@
                         <button class="toggle-btn" id="soundToggleBtn">ON</button>
                     </div>
                     <div class="setting-item">
-                        <label>Voice Announcements:</label>
-                        <button class="toggle-btn" id="voiceToggleBtn">ON</button>
+                        <label>Background Hum:</label>
+                        <button class="toggle-btn" id="musicToggleBtn">OFF</button>
                     </div>
                 </div>
 
@@ -703,12 +764,12 @@
 
     <script src="game.js"></script>
     
-    <!-- PropellerAds Service Worker Registration -->
+    <!-- Service Worker Registration (offline cache) -->
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js', { scope: '/' })
+            navigator.serviceWorker.register('./sw.js')
                 .then(registration => {
-                    console.log('PropellerAds Service Worker registered successfully');
+                    console.log('Service Worker registered successfully');
                 })
                 .catch(error => {
                     console.log('Service Worker registration failed:', error);
