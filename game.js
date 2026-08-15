@@ -274,6 +274,13 @@ class TowerDefenseGame {
         return Number.isFinite(parsed) ? parsed : fallback;
     }
 
+    getUpgradeTypeFromButtonId(buttonId) {
+        if (typeof buttonId !== 'string' || !buttonId.startsWith('upgrade')) return null;
+        const upgradeName = buttonId.slice('upgrade'.length);
+        if (!upgradeName) return null;
+        return upgradeName.charAt(0).toLowerCase() + upgradeName.slice(1);
+    }
+
     getDefaultUpgradeCosts() {
         return {
             damage: 100,
@@ -680,96 +687,17 @@ class TowerDefenseGame {
             }
         });
         
-        // Upgrade buttons
-        document.getElementById('upgradeDamage').addEventListener('click', () => {
-            this.buyUpgrade('damage');
-        });
-        
-        document.getElementById('upgradeRange').addEventListener('click', () => {
-            this.buyUpgrade('range');
-        });
-        
-        document.getElementById('upgradeFireRate').addEventListener('click', () => {
-            this.buyUpgrade('fireRate');
-        });
-        
-        document.getElementById('upgradeHealth').addEventListener('click', () => {
-            this.buyUpgrade('health');
-        });
-        
-        document.getElementById('upgradeTargets').addEventListener('click', () => {
-            this.buyUpgrade('targets');
-        });
-        
-        document.getElementById('upgradeClickDamage').addEventListener('click', () => {
-            this.buyUpgrade('clickDamage');
-        });
-        
-        document.getElementById('upgradeChainLightning').addEventListener('click', () => {
-            this.buyUpgrade('chainLightning');
-        });
-        
-        document.getElementById('upgradeShield').addEventListener('click', () => {
-            this.buyUpgrade('shield');
-        });
-        
-        document.getElementById('upgradeMaxHealth').addEventListener('click', () => {
-            this.buyUpgrade('maxHealth');
-        });
-        document.getElementById('upgradeArmor').addEventListener('click', () => {
-            this.buyUpgrade('armor');
-        });
-        document.getElementById('upgradeCritChance').addEventListener('click', () => {
-            this.buyUpgrade('critChance');
-        });
-        document.getElementById('upgradeCritDamage').addEventListener('click', () => {
-            this.buyUpgrade('critDamage');
-        });
-        document.getElementById('upgradeBurnChance').addEventListener('click', () => {
-            this.buyUpgrade('burnChance');
-        });
-        document.getElementById('upgradeSlowChance').addEventListener('click', () => {
-            this.buyUpgrade('slowChance');
-        });
-        document.getElementById('upgradeGoldBoost').addEventListener('click', () => {
-            this.buyUpgrade('goldBoost');
-        });
-        document.getElementById('upgradeChainRange').addEventListener('click', () => {
-            this.buyUpgrade('chainRange');
-        });
-        document.getElementById('upgradeClickRadius').addEventListener('click', () => {
-            this.buyUpgrade('clickRadius');
-        });
-        document.getElementById('upgradeClickRate').addEventListener('click', () => {
-            this.buyUpgrade('clickRate');
-        });
-        
-        // Tooltip event listeners for in-game upgrades
-        const upgradeButtons = [
-            { id: 'upgradeDamage', type: 'damage' },
-            { id: 'upgradeRange', type: 'range' },
-            { id: 'upgradeFireRate', type: 'fireRate' },
-            { id: 'upgradeHealth', type: 'health' },
-            { id: 'upgradeTargets', type: 'targets' },
-            { id: 'upgradeClickDamage', type: 'clickDamage' },
-            { id: 'upgradeChainLightning', type: 'chainLightning' },
-            { id: 'upgradeShield', type: 'shield' },
-            { id: 'upgradeMaxHealth', type: 'maxHealth' },
-            { id: 'upgradeArmor', type: 'armor' },
-            { id: 'upgradeCritChance', type: 'critChance' },
-            { id: 'upgradeCritDamage', type: 'critDamage' },
-            { id: 'upgradeBurnChance', type: 'burnChance' },
-            { id: 'upgradeSlowChance', type: 'slowChance' },
-            { id: 'upgradeGoldBoost', type: 'goldBoost' },
-            { id: 'upgradeChainRange', type: 'chainRange' },
-            { id: 'upgradeClickRadius', type: 'clickRadius' },
-            { id: 'upgradeClickRate', type: 'clickRate' }
-        ];
-        
-        upgradeButtons.forEach(btn => {
-            const element = document.getElementById(btn.id);
+        // Upgrade buttons (auto-bind so newly added upgrade buttons work without extra wiring)
+        const upgradeButtons = document.querySelectorAll('#upgradePanel .upgrade-option');
+        upgradeButtons.forEach((element) => {
+            const type = this.getUpgradeTypeFromButtonId(element.id);
+            if (!type || !(type in this.upgradeCosts)) return;
+
+            element.addEventListener('click', () => {
+                this.buyUpgrade(type);
+            });
             element.addEventListener('mouseenter', () => {
-                this.showTooltip(element, btn.type, false);
+                this.showTooltip(element, type, false);
             });
             element.addEventListener('mouseleave', () => {
                 this.hideTooltip();
