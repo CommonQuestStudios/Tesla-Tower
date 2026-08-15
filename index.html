@@ -221,6 +221,42 @@
                     <span>Shield:</span>
                     <span id="towerShield">0/0</span>
                 </div>
+                <div class="tower-stat">
+                    <span>Armor:</span>
+                    <span id="towerArmor">0</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Crit Chance:</span>
+                    <span id="towerCritChance">0%</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Crit Damage:</span>
+                    <span id="towerCritDamage">2.0x</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Burn Chance:</span>
+                    <span id="towerBurnChance">0%</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Slow Chance:</span>
+                    <span id="towerSlowChance">0%</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Gold Bonus:</span>
+                    <span id="towerGoldBoost">0%</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Chain Range:</span>
+                    <span id="towerChainRange">80</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Click Radius:</span>
+                    <span id="towerClickRadius">50</span>
+                </div>
+                <div class="tower-stat">
+                    <span>Click Rate:</span>
+                    <span id="towerClickRate">150ms</span>
+                </div>
             </div>
 
             <div class="upgrade-options">
@@ -278,6 +314,76 @@
                     <div class="upgrade-name">Shield Generator (<span id="currentShield">0</span>)</div>
                     <div class="upgrade-desc">+5 max shield & recharge</div>
                     <div class="upgrade-cost">Cost: <span id="shieldCost">80</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeMaxHealth">
+                    <div class="upgrade-icon">💪</div>
+                    <div class="upgrade-name">Max Health Up</div>
+                    <div class="upgrade-desc">+25 max tower HP</div>
+                    <div class="upgrade-cost">Cost: <span id="maxHealthCost">120</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeArmor">
+                    <div class="upgrade-icon">🔩</div>
+                    <div class="upgrade-name">Armor Plating</div>
+                    <div class="upgrade-desc">+1 damage reduction per hit</div>
+                    <div class="upgrade-cost">Cost: <span id="armorCost">200</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeCritChance">
+                    <div class="upgrade-icon">🎯</div>
+                    <div class="upgrade-name">Critical Hit Chance</div>
+                    <div class="upgrade-desc">+5% crit chance (2x damage)</div>
+                    <div class="upgrade-cost">Cost: <span id="critChanceCost">180</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeCritDamage">
+                    <div class="upgrade-icon">💢</div>
+                    <div class="upgrade-name">Critical Hit Power</div>
+                    <div class="upgrade-desc">+0.5x crit damage multiplier</div>
+                    <div class="upgrade-cost">Cost: <span id="critDamageCost">220</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeBurnChance">
+                    <div class="upgrade-icon">🔥</div>
+                    <div class="upgrade-name">Burn Chance</div>
+                    <div class="upgrade-desc">+15% chance to burn enemies</div>
+                    <div class="upgrade-cost">Cost: <span id="burnChanceCost">160</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeSlowChance">
+                    <div class="upgrade-icon">🧊</div>
+                    <div class="upgrade-name">Slow Chance</div>
+                    <div class="upgrade-desc">+10% chance to slow enemies</div>
+                    <div class="upgrade-cost">Cost: <span id="slowChanceCost">130</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeGoldBoost">
+                    <div class="upgrade-icon">💰</div>
+                    <div class="upgrade-name">Gold Boost</div>
+                    <div class="upgrade-desc">+15% gold per kill</div>
+                    <div class="upgrade-cost">Cost: <span id="goldBoostCost">175</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeChainRange">
+                    <div class="upgrade-icon">📏</div>
+                    <div class="upgrade-name">Chain Range</div>
+                    <div class="upgrade-desc">+20 chain lightning range</div>
+                    <div class="upgrade-cost">Cost: <span id="chainRangeCost">140</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeClickRadius">
+                    <div class="upgrade-icon">💫</div>
+                    <div class="upgrade-name">Click Strike Area</div>
+                    <div class="upgrade-desc">+15 click/tap strike radius</div>
+                    <div class="upgrade-cost">Cost: <span id="clickRadiusCost">100</span> gold</div>
+                </button>
+
+                <button class="upgrade-option" id="upgradeClickRate">
+                    <div class="upgrade-icon">⏩</div>
+                    <div class="upgrade-name">Click Fire Rate</div>
+                    <div class="upgrade-desc">Click strikes fire 10ms faster</div>
+                    <div class="upgrade-cost">Cost: <span id="clickRateCost">110</span> gold</div>
                 </button>
             </div>
 

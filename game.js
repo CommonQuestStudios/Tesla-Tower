@@ -84,8 +84,13 @@ class TowerDefenseGame {
             chainLightning: 0, // Number of chain jumps (0 = disabled)
             chainRange: 80, // How far lightning can jump to next target
             shield: 0, // Current shield points
-            maxShield: 0 // Maximum shield capacity
+            maxShield: 0, // Maximum shield capacity
+            armor: 0, // Damage reduction per hit
+            goldBoost: 1.0 // Gold multiplier from in-game upgrades
         };
+        
+        // Crit damage multiplier (2x base, increased by upgrades)
+        this.critDamageMultiplier = 2.0;
         
         // Click/Tap damage (base - bonus will be applied after loading permStats)
         this.clickDamage = 5;
@@ -114,7 +119,17 @@ class TowerDefenseGame {
             targets: 150, // Cost for multi-target upgrade
             clickDamage: 80, // Cost for click damage upgrade
             chainLightning: 200, // Cost for chain lightning upgrade
-            shield: 150 // Cost for shield upgrade
+            shield: 150, // Cost for shield upgrade
+            maxHealth: 120, // Cost for max health upgrade
+            armor: 200, // Cost for armor upgrade
+            critChance: 180, // Cost for crit chance upgrade
+            critDamage: 220, // Cost for crit damage upgrade
+            burnChance: 160, // Cost for burn chance upgrade
+            slowChance: 130, // Cost for slow chance upgrade
+            goldBoost: 175, // Cost for gold boost upgrade
+            chainRange: 140, // Cost for chain range upgrade
+            clickRadius: 100, // Cost for click radius upgrade
+            clickRate: 110 // Cost for click rate upgrade
         };
         
         // Game objects
@@ -268,7 +283,17 @@ class TowerDefenseGame {
             targets: 150,
             clickDamage: 80,
             chainLightning: 200,
-            shield: 150
+            shield: 150,
+            maxHealth: 120,
+            armor: 200,
+            critChance: 180,
+            critDamage: 220,
+            burnChance: 160,
+            slowChance: 130,
+            goldBoost: 175,
+            chainRange: 140,
+            clickRadius: 100,
+            clickRate: 110
         };
     }
 
@@ -688,6 +713,37 @@ class TowerDefenseGame {
             this.buyUpgrade('shield');
         });
         
+        document.getElementById('upgradeMaxHealth').addEventListener('click', () => {
+            this.buyUpgrade('maxHealth');
+        });
+        document.getElementById('upgradeArmor').addEventListener('click', () => {
+            this.buyUpgrade('armor');
+        });
+        document.getElementById('upgradeCritChance').addEventListener('click', () => {
+            this.buyUpgrade('critChance');
+        });
+        document.getElementById('upgradeCritDamage').addEventListener('click', () => {
+            this.buyUpgrade('critDamage');
+        });
+        document.getElementById('upgradeBurnChance').addEventListener('click', () => {
+            this.buyUpgrade('burnChance');
+        });
+        document.getElementById('upgradeSlowChance').addEventListener('click', () => {
+            this.buyUpgrade('slowChance');
+        });
+        document.getElementById('upgradeGoldBoost').addEventListener('click', () => {
+            this.buyUpgrade('goldBoost');
+        });
+        document.getElementById('upgradeChainRange').addEventListener('click', () => {
+            this.buyUpgrade('chainRange');
+        });
+        document.getElementById('upgradeClickRadius').addEventListener('click', () => {
+            this.buyUpgrade('clickRadius');
+        });
+        document.getElementById('upgradeClickRate').addEventListener('click', () => {
+            this.buyUpgrade('clickRate');
+        });
+        
         // Tooltip event listeners for in-game upgrades
         const upgradeButtons = [
             { id: 'upgradeDamage', type: 'damage' },
@@ -697,7 +753,17 @@ class TowerDefenseGame {
             { id: 'upgradeTargets', type: 'targets' },
             { id: 'upgradeClickDamage', type: 'clickDamage' },
             { id: 'upgradeChainLightning', type: 'chainLightning' },
-            { id: 'upgradeShield', type: 'shield' }
+            { id: 'upgradeShield', type: 'shield' },
+            { id: 'upgradeMaxHealth', type: 'maxHealth' },
+            { id: 'upgradeArmor', type: 'armor' },
+            { id: 'upgradeCritChance', type: 'critChance' },
+            { id: 'upgradeCritDamage', type: 'critDamage' },
+            { id: 'upgradeBurnChance', type: 'burnChance' },
+            { id: 'upgradeSlowChance', type: 'slowChance' },
+            { id: 'upgradeGoldBoost', type: 'goldBoost' },
+            { id: 'upgradeChainRange', type: 'chainRange' },
+            { id: 'upgradeClickRadius', type: 'clickRadius' },
+            { id: 'upgradeClickRate', type: 'clickRate' }
         ];
         
         upgradeButtons.forEach(btn => {
@@ -1016,7 +1082,17 @@ class TowerDefenseGame {
             targets: 150, 
             clickDamage: 80, 
             chainLightning: 200, 
-            shield: 150 
+            shield: 150,
+            maxHealth: 120,
+            armor: 200,
+            critChance: 180,
+            critDamage: 220,
+            burnChance: 160,
+            slowChance: 130,
+            goldBoost: 175,
+            chainRange: 140,
+            clickRadius: 100,
+            clickRate: 110
         };
         
         // Reset game state flags
@@ -1203,6 +1279,49 @@ class TowerDefenseGame {
                 this.tower.shield = this.tower.maxShield; // Fully charge shield
                 this.upgradeCosts.shield = Math.floor(this.upgradeCosts.shield * 1.5);
                 break;
+            case 'maxHealth':
+                this.tower.maxHealth += 25;
+                this.tower.health = Math.min(this.tower.health + 25, this.tower.maxHealth);
+                this.upgradeCosts.maxHealth = Math.floor(this.upgradeCosts.maxHealth * 1.5);
+                break;
+            case 'armor':
+                this.tower.armor += 1;
+                this.upgradeCosts.armor = Math.floor(this.upgradeCosts.armor * 1.5);
+                break;
+            case 'critChance':
+                this.critChance = Math.min(0.75, (this.critChance || 0) + 0.05);
+                this.upgradeCosts.critChance = Math.floor(this.upgradeCosts.critChance * 1.5);
+                break;
+            case 'critDamage':
+                this.critDamageMultiplier = (this.critDamageMultiplier || 2) + 0.5;
+                this.upgradeCosts.critDamage = Math.floor(this.upgradeCosts.critDamage * 1.5);
+                break;
+            case 'burnChance':
+                this.statusConfig.shockChance = Math.min(0.8, (this.statusConfig.shockChance || 0) + 0.15);
+                if ((this.statusConfig.shockDps || 0) === 0) this.statusConfig.shockDps = 3;
+                else this.statusConfig.shockDps += 1;
+                this.upgradeCosts.burnChance = Math.floor(this.upgradeCosts.burnChance * 1.5);
+                break;
+            case 'slowChance':
+                this.statusConfig.slowChance = Math.min(0.8, (this.statusConfig.slowChance || 0) + 0.10);
+                this.upgradeCosts.slowChance = Math.floor(this.upgradeCosts.slowChance * 1.5);
+                break;
+            case 'goldBoost':
+                this.tower.goldBoost = (this.tower.goldBoost || 1) * 1.15;
+                this.upgradeCosts.goldBoost = Math.floor(this.upgradeCosts.goldBoost * 1.5);
+                break;
+            case 'chainRange':
+                this.tower.chainRange += 20;
+                this.upgradeCosts.chainRange = Math.floor(this.upgradeCosts.chainRange * 1.5);
+                break;
+            case 'clickRadius':
+                this.clickStrikeRadius += 15;
+                this.upgradeCosts.clickRadius = Math.floor(this.upgradeCosts.clickRadius * 1.5);
+                break;
+            case 'clickRate':
+                this.clickFireRate = Math.max(50, this.clickFireRate - 10);
+                this.upgradeCosts.clickRate = Math.floor(this.upgradeCosts.clickRate * 1.5);
+                break;
         }
         
         this.tower.level++;
@@ -1229,6 +1348,15 @@ class TowerDefenseGame {
         document.getElementById('currentChainJumps').textContent = this.tower.chainLightning;
         document.getElementById('towerShield').textContent = this.tower.shield + '/' + this.tower.maxShield;
         document.getElementById('currentShield').textContent = this.tower.maxShield;
+        document.getElementById('towerArmor').textContent = this.tower.armor || 0;
+        document.getElementById('towerCritChance').textContent = Math.round((this.critChance || 0) * 100) + '%';
+        document.getElementById('towerCritDamage').textContent = (this.critDamageMultiplier || 2).toFixed(1) + 'x';
+        document.getElementById('towerBurnChance').textContent = Math.round((this.statusConfig.shockChance || 0) * 100) + '%';
+        document.getElementById('towerSlowChance').textContent = Math.round((this.statusConfig.slowChance || 0) * 100) + '%';
+        document.getElementById('towerGoldBoost').textContent = Math.round(((this.tower.goldBoost || 1) - 1) * 100) + '%';
+        document.getElementById('towerChainRange').textContent = this.tower.chainRange || 80;
+        document.getElementById('towerClickRadius').textContent = this.clickStrikeRadius;
+        document.getElementById('towerClickRate').textContent = this.clickFireRate + 'ms';
         
         document.getElementById('damageCost').textContent = this.upgradeCosts.damage;
         document.getElementById('rangeCost').textContent = this.upgradeCosts.range;
@@ -1238,9 +1366,19 @@ class TowerDefenseGame {
         document.getElementById('clickDamageCost').textContent = this.upgradeCosts.clickDamage;
         document.getElementById('chainLightningCost').textContent = this.upgradeCosts.chainLightning;
         document.getElementById('shieldCost').textContent = this.upgradeCosts.shield;
+        document.getElementById('maxHealthCost').textContent = this.upgradeCosts.maxHealth;
+        document.getElementById('armorCost').textContent = this.upgradeCosts.armor;
+        document.getElementById('critChanceCost').textContent = this.upgradeCosts.critChance;
+        document.getElementById('critDamageCost').textContent = this.upgradeCosts.critDamage;
+        document.getElementById('burnChanceCost').textContent = this.upgradeCosts.burnChance;
+        document.getElementById('slowChanceCost').textContent = this.upgradeCosts.slowChance;
+        document.getElementById('goldBoostCost').textContent = this.upgradeCosts.goldBoost;
+        document.getElementById('chainRangeCost').textContent = this.upgradeCosts.chainRange;
+        document.getElementById('clickRadiusCost').textContent = this.upgradeCosts.clickRadius;
+        document.getElementById('clickRateCost').textContent = this.upgradeCosts.clickRate;
         
         // Disable buttons if not enough gold
-        const upgrades = ['damage', 'range', 'fireRate', 'health', 'targets', 'clickDamage', 'chainLightning', 'shield'];
+        const upgrades = ['damage', 'range', 'fireRate', 'health', 'targets', 'clickDamage', 'chainLightning', 'shield', 'maxHealth', 'armor', 'critChance', 'critDamage', 'burnChance', 'slowChance', 'goldBoost', 'chainRange', 'clickRadius', 'clickRate'];
         upgrades.forEach(type => {
             // Handle special capitalization cases
             let btnId;
@@ -1724,8 +1862,9 @@ class TowerDefenseGame {
                         // Create blue shield particle effect
                         this.createParticles(zombie.x, zombie.y, '#00ddff', 3);
                     } else {
-                        this.tower.health -= zombieDamage;
-                        this.challengeTracking.damageTaken += zombieDamage;
+                        const zombieDamageReduced = Math.max(1, zombieDamage - (this.tower.armor || 0));
+                        this.tower.health -= zombieDamageReduced;
+                        this.challengeTracking.damageTaken += zombieDamageReduced;
                         this.addScreenShake(2, 120);
                         // Create red damage particle effect
                         this.createParticles(zombie.x, zombie.y, '#ff0000', 3);
@@ -1753,7 +1892,7 @@ class TowerDefenseGame {
                 this.kills += killsGained;
                 
                 // Apply gold multiplier
-                const goldGained = Math.floor(zombie.goldValue * (this.goldMultiplier || 1));
+                const goldGained = Math.floor(zombie.goldValue * (this.goldMultiplier || 1) * (this.tower.goldBoost || 1));
                 this.gold += goldGained;
                 this.sessionGoldEarned += goldGained;
                 
@@ -1804,7 +1943,8 @@ class TowerDefenseGame {
                         if (this.tower.shield > 0) {
                             this.tower.shield = Math.max(0, this.tower.shield - explosionDamage);
                         } else {
-                            this.tower.health -= explosionDamage;
+                            const reducedExplosionDamage = Math.max(1, explosionDamage - (this.tower.armor || 0));
+                            this.tower.health -= reducedExplosionDamage;
                         }
                         this.addScreenShake(3, 180);
                         this.showMessage(`💥 EXPLOSION! -${explosionDamage} HP`, '#ff00ff');
@@ -1827,7 +1967,8 @@ class TowerDefenseGame {
                         if (this.tower.shield > 0) {
                             this.tower.shield = Math.max(0, this.tower.shield - explosionDamage);
                         } else {
-                            this.tower.health -= explosionDamage;
+                            const reducedExplosionDamage = Math.max(1, explosionDamage - (this.tower.armor || 0));
+                            this.tower.health -= reducedExplosionDamage;
                         }
                         this.addScreenShake(2, 140);
                         this.showMessage(`💥 VOLATILE BLAST! -${explosionDamage} HP`, ringColor);
@@ -1961,7 +2102,7 @@ class TowerDefenseGame {
         
         // Check for critical strike
         const isCrit = Math.random() < (this.critChance || 0);
-        const damageDealt = isCrit ? Math.floor(this.tower.damage * 2) : this.tower.damage;
+        const damageDealt = isCrit ? Math.floor(this.tower.damage * (this.critDamageMultiplier || 2)) : this.tower.damage;
 
         // Deal damage to current target (accounts for armored/phasing)
         const actualDamage = this.dealDamageToZombie(target, damageDealt);
@@ -3121,6 +3262,86 @@ class TowerDefenseGame {
                     <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.maxShield || 0) + 25}</p>
                     <p class="tooltip-effect">💡 Adds a buffer before HP is lost</p>
                 `
+            },
+            maxHealth: {
+                title: '💪 Max Health Up',
+                content: `
+                    <p><span class="tooltip-current">Current Max HP:</span> ${this.tower.maxHealth}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.tower.maxHealth + 25}</p>
+                    <p class="tooltip-effect">💡 Permanently increases tower's max health capacity</p>
+                `
+            },
+            armor: {
+                title: '🔩 Armor Plating',
+                content: `
+                    <p><span class="tooltip-current">Current Armor:</span> ${this.tower.armor || 0}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.armor || 0) + 1}</p>
+                    <p class="tooltip-effect">💡 Reduces all incoming damage by 1 per armor point</p>
+                `
+            },
+            critChance: {
+                title: '🎯 Critical Hit Chance',
+                content: `
+                    <p><span class="tooltip-current">Current Crit Chance:</span> ${Math.round((this.critChance || 0) * 100)}%</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${Math.round(((this.critChance || 0) + 0.05) * 100)}%</p>
+                    <p class="tooltip-effect">💡 Chance to deal critical hits for double damage</p>
+                `
+            },
+            critDamage: {
+                title: '💢 Critical Hit Power',
+                content: `
+                    <p><span class="tooltip-current">Current Crit Multiplier:</span> ${(this.critDamageMultiplier || 2).toFixed(1)}x</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${((this.critDamageMultiplier || 2) + 0.5).toFixed(1)}x</p>
+                    <p class="tooltip-effect">💡 Critical hits deal even more damage</p>
+                `
+            },
+            burnChance: {
+                title: '🔥 Burn Chance',
+                content: `
+                    <p><span class="tooltip-current">Current Burn Chance:</span> ${Math.round((this.statusConfig.shockChance || 0) * 100)}%</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${Math.min(80, Math.round(((this.statusConfig.shockChance || 0) + 0.15) * 100))}%</p>
+                    <p class="tooltip-effect">💡 Burning enemies take damage over time</p>
+                `
+            },
+            slowChance: {
+                title: '🧊 Slow Chance',
+                content: `
+                    <p><span class="tooltip-current">Current Slow Chance:</span> ${Math.round((this.statusConfig.slowChance || 0) * 100)}%</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${Math.min(80, Math.round(((this.statusConfig.slowChance || 0) + 0.10) * 100))}%</p>
+                    <p class="tooltip-effect">💡 Slow enemies on hit, reducing their movement speed</p>
+                `
+            },
+            goldBoost: {
+                title: '💰 Gold Boost',
+                content: `
+                    <p><span class="tooltip-current">Current Gold Bonus:</span> +${Math.round(((this.tower.goldBoost || 1) - 1) * 100)}%</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> +${Math.round(((this.tower.goldBoost || 1) * 1.15 - 1) * 100)}%</p>
+                    <p class="tooltip-effect">💡 Each kill rewards more gold</p>
+                `
+            },
+            chainRange: {
+                title: '⚡📏 Chain Range',
+                content: `
+                    <p><span class="tooltip-current">Current Chain Range:</span> ${this.tower.chainRange || 80}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${(this.tower.chainRange || 80) + 20}</p>
+                    <p class="tooltip-effect">💡 Lightning can jump farther to reach more enemies</p>
+                `
+            },
+            clickRadius: {
+                title: '💫 Click Strike Area',
+                content: `
+                    <p><span class="tooltip-current">Current Radius:</span> ${this.clickStrikeRadius}</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${this.clickStrikeRadius + 15}</p>
+                    <p class="tooltip-effect">💡 Click/tap strikes spread over a wider area</p>
+                `
+            },
+            clickRate: {
+                title: '⚡👆 Click Fire Rate',
+                content: `
+                    <p><span class="tooltip-current">Current Interval:</span> ${this.clickFireRate}ms</p>
+                    <p><span class="tooltip-upgrade">After Upgrade:</span> ${Math.max(50, this.clickFireRate - 10)}ms</p>
+                    <p class="tooltip-effect">💡 Click/tap strikes spawn more rapidly</p>
+                `
             }
         };
 
@@ -3232,7 +3453,7 @@ class TowerDefenseGame {
         // Apply permanent bonuses (sets health, damage, click damage, gold)
         this.applyPermanentBonuses();
         
-        this.upgradeCosts = { damage: 100, range: 80, fireRate: 120, health: 50, targets: 150, clickDamage: 80, chainLightning: 200, shield: 150 };
+        this.upgradeCosts = { damage: 100, range: 80, fireRate: 120, health: 50, targets: 150, clickDamage: 80, chainLightning: 200, shield: 150, maxHealth: 120, armor: 200, critChance: 180, critDamage: 220, burnChance: 160, slowChance: 130, goldBoost: 175, chainRange: 140, clickRadius: 100, clickRate: 110 };
         this.zombies = [];
         this.lightning = [];
         this.particles = [];
@@ -3406,12 +3627,16 @@ class TowerDefenseGame {
                         maxTargets: 1,
                         chainLightning: 0,
                         shield: 0,
-                        maxShield: 0
+                        maxShield: 0,
+                        armor: 0,
+                        goldBoost: 1.0
                     },
                     clickDamage: this.clickDamage,
                     clickStrikeRadius: this.clickStrikeRadius,
                     clickFireRate: this.clickFireRate,
-                    upgradeCosts: { 
+                    critDamageMultiplier: 2.0,
+                    critChance: 0,
+                    upgradeCosts: {
                         damage: 100, 
                         range: 80, 
                         fireRate: 120, 
@@ -3419,7 +3644,17 @@ class TowerDefenseGame {
                         targets: 150, 
                         clickDamage: 80, 
                         chainLightning: 200, 
-                        shield: 150 
+                        shield: 150,
+                        maxHealth: 120,
+                        armor: 200,
+                        critChance: 180,
+                        critDamage: 220,
+                        burnChance: 160,
+                        slowChance: 130,
+                        goldBoost: 175,
+                        chainRange: 140,
+                        clickRadius: 100,
+                        clickRate: 110
                     },
                     zombiesPerWave: 5,
                     spawnRate: 2000,
@@ -3450,11 +3685,15 @@ class TowerDefenseGame {
                 maxTargets: this.tower.maxTargets,
                 chainLightning: this.tower.chainLightning,
                 shield: this.tower.shield,
-                maxShield: this.tower.maxShield
+                maxShield: this.tower.maxShield,
+                armor: this.tower.armor || 0,
+                goldBoost: this.tower.goldBoost || 1.0
             },
             clickDamage: this.clickDamage,
             clickStrikeRadius: this.clickStrikeRadius,
             clickFireRate: this.clickFireRate,
+            critDamageMultiplier: this.critDamageMultiplier || 2.0,
+            critChance: this.critChance || 0,
             upgradeCosts: { ...this.upgradeCosts },
             zombiesPerWave: this.zombiesPerWave,
             spawnRate: this.spawnRate,
@@ -3522,12 +3761,16 @@ class TowerDefenseGame {
             this.tower.chainLightning = Math.max(0, Math.floor(this.toFiniteNumber(savedTower.chainLightning, this.tower.chainLightning)));
             this.tower.shield = Math.max(0, this.toFiniteNumber(savedTower.shield, 0));
             this.tower.maxShield = Math.max(0, this.toFiniteNumber(savedTower.maxShield, this.tower.maxShield));
+            this.tower.armor = Math.max(0, Math.floor(this.toFiniteNumber(savedTower.armor, 0)));
+            this.tower.goldBoost = Math.max(1.0, this.toFiniteNumber(savedTower.goldBoost, 1.0));
             if (this.tower.health > this.tower.maxHealth) this.tower.health = this.tower.maxHealth;
             if (this.tower.shield > this.tower.maxShield) this.tower.shield = this.tower.maxShield;
 
             this.clickDamage = Math.max(1, this.toFiniteNumber(data.clickDamage, this.clickDamage));
             this.clickStrikeRadius = Math.max(10, this.toFiniteNumber(data.clickStrikeRadius, this.clickStrikeRadius ?? 50));
             this.clickFireRate = Math.max(60, this.toFiniteNumber(data.clickFireRate, this.clickFireRate ?? 150));
+            this.critDamageMultiplier = Math.max(2.0, this.toFiniteNumber(data.critDamageMultiplier, 2.0));
+            if (data.critChance != null) this.critChance = Math.max(0, this.toFiniteNumber(data.critChance, this.critChance || 0));
             this.upgradeCosts = { ...this.getDefaultUpgradeCosts(), ...(data.upgradeCosts && typeof data.upgradeCosts === 'object' ? data.upgradeCosts : {}) };
             this.zombiesPerWave = Math.max(1, Math.floor(this.toFiniteNumber(data.zombiesPerWave, this.zombiesPerWave)));
             this.spawnRate = Math.max(100, this.toFiniteNumber(data.spawnRate, this.spawnRate));
@@ -3858,7 +4101,10 @@ class TowerDefenseGame {
         this.tower.maxTargets = 1;
         this.tower.chainLightning = 0;
         this.tower.chainRange = 80;
+        this.tower.armor = 0;
+        this.tower.goldBoost = 1.0;
         this.clickStrikeRadius = 50;
+        this.critDamageMultiplier = 2.0;
 
         this.abilities.emp.cooldownMs = this.baseAbilityCooldowns.emp;
         this.abilities.overcharge.cooldownMs = this.baseAbilityCooldowns.overcharge;
