@@ -241,6 +241,86 @@ class TowerDefenseGame {
         this.gameLoop();
     }
 
+    readStorageJSON(key) {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+
+        try {
+            return JSON.parse(raw);
+        } catch (error) {
+            console.warn(`Ignoring invalid saved data for ${key}`, error);
+            localStorage.removeItem(key);
+            return null;
+        }
+    }
+
+    toFiniteNumber(value, fallback) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    getDefaultUpgradeCosts() {
+        return {
+            damage: 100,
+            range: 80,
+            fireRate: 120,
+            health: 50,
+            targets: 150,
+            clickDamage: 80,
+            chainLightning: 200,
+            shield: 150
+        };
+    }
+
+    getDefaultPermanentStats() {
+        return {
+            totalKills: 0,
+            bonusDamage: 0,
+            bonusHealth: 0,
+            bonusClickDamage: 0,
+            bonusStartGold: 0,
+            gems: 0,
+            gemUpgrades: {
+                damageMultiplier: 0,
+                healthMultiplier: 0,
+                goldMultiplier: 0,
+                xpMultiplier: 0,
+                critChance: 0,
+                healthRegen: 0
+            },
+            totalDamageDealt: 0,
+            totalClicks: 0,
+            highestWave: 0,
+            totalGamesPlayed: 0,
+            totalGoldEarned: 0,
+            bossesKilled: 0,
+            zombieKills: {
+                normal: 0,
+                strong: 0,
+                runner: 0,
+                tank: 0,
+                exploder: 0,
+                spawner: 0,
+                boss: 0
+            },
+            dailyRewards: {
+                lastLogin: null,
+                streak: 0,
+                claimed: []
+            },
+            themes: {
+                unlocked: ['classic'],
+                current: 'classic'
+            },
+            relics: {
+                owned: [],
+                equipped: [null, null, null],
+                shards: 0,
+                levels: {}
+            }
+        };
+    }
+
     cacheUIElements() {
         this.ui = {
             wave: document.getElementById('wave'),
@@ -283,7 +363,7 @@ class TowerDefenseGame {
         // List of all panels that should close on backdrop click
         const panels = [
             { id: 'upgradePanel', backdropId: 'upgradeBackdrop', closeMethod: () => this.closeUpgradePanel() },
-            { id: 'permUpgradesPanel', backdropId: 'permUpgradesBackdrop', closeMethod: () => this.closePermUpgradesPanel() },
+            { id: 'gemShopPanel', backdropId: 'gemShopBackdrop', closeMethod: () => this.closeGemShopPanel() },
             { id: 'statsPanel', backdropId: 'statsBackdrop', closeMethod: () => this.closeStatsPanel() },
             { id: 'achievementsPanel', backdropId: 'achievementsBackdrop', closeMethod: () => this.closeAchievementsPanel() },
             { id: 'saveSlotPanel', backdropId: 'saveSlotBackdrop', closeMethod: () => this.closeSaveSlotPanel() },
@@ -3400,20 +3480,18 @@ class TowerDefenseGame {
     loadGame(slot = null) {
         // If slot is provided, use it; otherwise use current slot
         const loadSlot = slot !== null ? slot : this.currentSlot;
-        
-        const saveData = localStorage.getItem(`teslaTowerSave_slot${loadSlot}`);
-        
-        if (!saveData) {
+
+        const data = this.readStorageJSON(`teslaTowerSave_slot${loadSlot}`);
+
+        if (!data || !data.tower || typeof data.tower !== 'object') {
             this.showMessage(`No saved game in Slot ${loadSlot}!`, '#ff4444');
             return;
         }
-        
+
         try {
-            const data = JSON.parse(saveData);
-            
             // Update current slot
             this.currentSlot = loadSlot;
-            localStorage.setItem('currentSlot', loadSlot);
+            localStorage.setItem('currentSlot', String(loadSlot));
             
             // Restore player name if it exists in save data
             if (data.playerName) {
@@ -3430,25 +3508,29 @@ class TowerDefenseGame {
             this.checkDailyReward();
             
             // Restore game state
-            this.wave = data.wave;
-            this.kills = data.kills;
-            this.gold = data.gold;
-            this.tower.health = data.tower.health;
-            this.tower.maxHealth = data.tower.maxHealth;
-            this.tower.level = data.tower.level;
-            this.tower.damage = data.tower.damage;
-            this.tower.range = data.tower.range;
-            this.tower.fireRate = data.tower.fireRate;
-            this.tower.maxTargets = data.tower.maxTargets;
-            this.tower.chainLightning = data.tower.chainLightning;
-            this.tower.shield = data.tower.shield;
-            this.tower.maxShield = data.tower.maxShield;
-            this.clickDamage = data.clickDamage;
-            this.clickStrikeRadius = Number.isFinite(data.clickStrikeRadius) ? data.clickStrikeRadius : (this.clickStrikeRadius ?? 50);
-            this.clickFireRate = Number.isFinite(data.clickFireRate) ? data.clickFireRate : (this.clickFireRate ?? 150);
-            this.upgradeCosts = { ...data.upgradeCosts };
-            this.zombiesPerWave = data.zombiesPerWave;
-            this.spawnRate = data.spawnRate;
+            const savedTower = data.tower;
+            this.wave = Math.max(1, Math.floor(this.toFiniteNumber(data.wave, 1)));
+            this.kills = Math.max(0, Math.floor(this.toFiniteNumber(data.kills, 0)));
+            this.gold = Math.max(0, Math.floor(this.toFiniteNumber(data.gold, this.gold)));
+            this.tower.health = this.toFiniteNumber(savedTower.health, this.tower.health);
+            this.tower.maxHealth = Math.max(1, this.toFiniteNumber(savedTower.maxHealth, this.tower.maxHealth));
+            this.tower.level = Math.max(1, Math.floor(this.toFiniteNumber(savedTower.level, this.tower.level)));
+            this.tower.damage = Math.max(1, this.toFiniteNumber(savedTower.damage, this.tower.damage));
+            this.tower.range = Math.max(1, this.toFiniteNumber(savedTower.range, this.tower.range));
+            this.tower.fireRate = Math.max(100, this.toFiniteNumber(savedTower.fireRate, this.tower.fireRate));
+            this.tower.maxTargets = Math.max(1, Math.floor(this.toFiniteNumber(savedTower.maxTargets, this.tower.maxTargets)));
+            this.tower.chainLightning = Math.max(0, Math.floor(this.toFiniteNumber(savedTower.chainLightning, this.tower.chainLightning)));
+            this.tower.shield = Math.max(0, this.toFiniteNumber(savedTower.shield, 0));
+            this.tower.maxShield = Math.max(0, this.toFiniteNumber(savedTower.maxShield, this.tower.maxShield));
+            if (this.tower.health > this.tower.maxHealth) this.tower.health = this.tower.maxHealth;
+            if (this.tower.shield > this.tower.maxShield) this.tower.shield = this.tower.maxShield;
+
+            this.clickDamage = Math.max(1, this.toFiniteNumber(data.clickDamage, this.clickDamage));
+            this.clickStrikeRadius = Math.max(10, this.toFiniteNumber(data.clickStrikeRadius, this.clickStrikeRadius ?? 50));
+            this.clickFireRate = Math.max(60, this.toFiniteNumber(data.clickFireRate, this.clickFireRate ?? 150));
+            this.upgradeCosts = { ...this.getDefaultUpgradeCosts(), ...(data.upgradeCosts && typeof data.upgradeCosts === 'object' ? data.upgradeCosts : {}) };
+            this.zombiesPerWave = Math.max(1, Math.floor(this.toFiniteNumber(data.zombiesPerWave, this.zombiesPerWave)));
+            this.spawnRate = Math.max(100, this.toFiniteNumber(data.spawnRate, this.spawnRate));
 
             // Restore meta systems (backward compatible)
             this.runObjective = data.runObjective || null;
@@ -3497,34 +3579,29 @@ class TowerDefenseGame {
     
     updateSaveSlotInfo() {
         for (let i = 1; i <= 3; i++) {
-            const saveData = localStorage.getItem(`teslaTowerSave_slot${i}`);
-            const permData = localStorage.getItem(`teslaTowerPermanent_slot${i}`);
+            const data = this.readStorageJSON(`teslaTowerSave_slot${i}`);
+            const perm = this.readStorageJSON(`teslaTowerPermanent_slot${i}`);
             const slotElement = document.getElementById(`slotInfo${i}`);
             
-            if (saveData) {
-                try {
-                    const data = JSON.parse(saveData);
-                    const date = new Date(data.timestamp);
-                    const playerName = data.playerName || 'Player';
-                    
-                    let infoHTML = `
-                        <strong style="color: #00ffff;">${playerName}</strong><br>
-                        <strong>Wave ${data.wave}</strong> - ${data.kills} Kills<br>
-                        <small>${date.toLocaleDateString()} ${date.toLocaleTimeString()}</small>
-                    `;
-                    
-                    // Add permanent stats info if available
-                    if (permData) {
-                        try {
-                            const perm = JSON.parse(permData);
-                            infoHTML += `<br><small style="color: #ffd700;">⭐ Total Kills: ${perm.totalKills.toLocaleString()}</small>`;
-                        } catch (e) {}
-                    }
-                    
-                    slotElement.innerHTML = infoHTML;
-                } catch (error) {
-                    slotElement.innerHTML = '<span style="color: #888;">Empty Slot</span>';
+            if (data) {
+                const timestamp = this.toFiniteNumber(data.timestamp, Date.now());
+                const date = new Date(timestamp);
+                const hasValidDate = !Number.isNaN(date.getTime());
+                const playerName = data.playerName || 'Player';
+                const wave = Math.max(1, Math.floor(this.toFiniteNumber(data.wave, 1)));
+                const kills = Math.max(0, Math.floor(this.toFiniteNumber(data.kills, 0)));
+
+                let infoHTML = `
+                    <strong style="color: #00ffff;">${playerName}</strong><br>
+                    <strong>Wave ${wave}</strong> - ${kills} Kills<br>
+                    <small>${hasValidDate ? `${date.toLocaleDateString()} ${date.toLocaleTimeString()}` : 'Unknown save time'}</small>
+                `;
+
+                if (perm && typeof perm === 'object') {
+                    infoHTML += `<br><small style="color: #ffd700;">⭐ Total Kills: ${Math.max(0, Math.floor(this.toFiniteNumber(perm.totalKills, 0))).toLocaleString()}</small>`;
                 }
+
+                slotElement.innerHTML = infoHTML;
             } else {
                 slotElement.innerHTML = '<span style="color: #888;">Empty Slot</span>';
             }
@@ -3563,9 +3640,9 @@ class TowerDefenseGame {
     
     loadPermanentStats() {
         // Load permanent stats for current slot
-        const saved = localStorage.getItem(`teslaTowerPermanent_slot${this.currentSlot}`);
-        if (saved) {
-            this.permStats = JSON.parse(saved);
+        const saved = this.readStorageJSON(`teslaTowerPermanent_slot${this.currentSlot}`);
+        if (saved && typeof saved === 'object') {
+            this.permStats = saved;
             // Add zombie kills if not present (for backward compatibility)
             if (!this.permStats.zombieKills) {
                 this.permStats.zombieKills = {
@@ -3574,44 +3651,12 @@ class TowerDefenseGame {
                     runner: 0,
                     tank: 0,
                     exploder: 0,
+                    spawner: 0,
                     boss: 0
                 };
             }
         } else {
-            this.permStats = {
-                totalKills: 0,
-                bonusDamage: 0,
-                bonusHealth: 0,
-                bonusClickDamage: 0,
-                bonusStartGold: 0,
-                gems: 0, // Premium currency
-                // Gem shop upgrades
-                gemUpgrades: {
-                    damageMultiplier: 0,
-                    healthMultiplier: 0,
-                    goldMultiplier: 0,
-                    xpMultiplier: 0,
-                    critChance: 0,
-                    healthRegen: 0
-                },
-                // Lifetime stats
-                totalDamageDealt: 0,
-                totalClicks: 0,
-                highestWave: 0,
-                totalGamesPlayed: 0,
-                totalGoldEarned: 0,
-                bossesKilled: 0,
-                // Zombie type kills
-                zombieKills: {
-                    normal: 0,
-                    strong: 0,
-                    runner: 0,
-                    tank: 0,
-                    exploder: 0,
-                    spawner: 0,
-                    boss: 0
-                }
-            };
+            this.permStats = this.getDefaultPermanentStats();
         }
         
         // Add gems if not present (backward compatibility)
@@ -4935,9 +4980,9 @@ class TowerDefenseGame {
     
     loadAchievements() {
         // Load achievements for current slot
-        const saved = localStorage.getItem(`teslaTowerAchievements_slot${this.currentSlot}`);
-        if (saved) {
-            this.achievements = JSON.parse(saved);
+        const saved = this.readStorageJSON(`teslaTowerAchievements_slot${this.currentSlot}`);
+        if (Array.isArray(saved)) {
+            this.achievements = saved;
         } else {
             this.achievements = [
                 { id: 'kills_10', name: 'First Blood', desc: 'Kill 10 zombies', icon: '🩸', unlocked: false, requirement: 10, stat: 'totalKills', gemReward: 5 },
@@ -5074,14 +5119,11 @@ class TowerDefenseGame {
     }
     
     openPermUpgradesPanel() {
-        document.getElementById('permUpgradesBackdrop').classList.add('active');
-        document.getElementById('permUpgradesPanel').classList.add('active');
-        this.updatePermUpgradesPanel();
+        this.openGemShopPanel();
     }
     
     closePermUpgradesPanel() {
-        document.getElementById('permUpgradesBackdrop').classList.remove('active');
-        document.getElementById('permUpgradesPanel').classList.remove('active');
+        this.closeGemShopPanel();
     }
     
     // Gem Shop Functions
@@ -5202,34 +5244,7 @@ class TowerDefenseGame {
     }
     
     updatePermUpgradesPanel() {
-        document.getElementById('totalKills').textContent = this.permStats.totalKills;
-        document.getElementById('permBonusDamage').textContent = '+' + this.permStats.bonusDamage;
-        document.getElementById('permBonusHealth').textContent = '+' + this.permStats.bonusHealth;
-        document.getElementById('permBonusClick').textContent = '+' + this.permStats.bonusClickDamage;
-        document.getElementById('permBonusGold').textContent = '+' + this.permStats.bonusStartGold;
-        
-        // Update costs and button states
-        const costs = {
-            damage: 50 + this.permStats.bonusDamage * 25,
-            health: 100 + this.permStats.bonusHealth * 50,
-            click: 75 + this.permStats.bonusClickDamage * 35,
-            gold: 150 + this.permStats.bonusStartGold * 75
-        };
-        
-        document.getElementById('permDamageCost').textContent = costs.damage;
-        document.getElementById('permHealthCost').textContent = costs.health;
-        document.getElementById('permClickCost').textContent = costs.click;
-        document.getElementById('permGoldCost').textContent = costs.gold;
-        
-        // Disable buttons if not enough kills
-        ['damage', 'health', 'click', 'gold'].forEach(type => {
-            const btn = document.getElementById(`buyPerm${type.charAt(0).toUpperCase() + type.slice(1)}`);
-            if (this.permStats.totalKills < costs[type]) {
-                btn.classList.add('disabled');
-            } else {
-                btn.classList.remove('disabled');
-            }
-        });
+        this.updateGemShopPanel();
     }
     
     buyPermUpgrade(type) {
@@ -5461,6 +5476,7 @@ class TowerDefenseGame {
         document.getElementById('killsRunner').textContent = this.permStats.zombieKills.runner;
         document.getElementById('killsTank').textContent = this.permStats.zombieKills.tank;
         document.getElementById('killsExploder').textContent = this.permStats.zombieKills.exploder;
+        document.getElementById('killsSpawner').textContent = this.permStats.zombieKills.spawner;
         document.getElementById('killsBoss').textContent = this.permStats.zombieKills.boss;
     }
     
@@ -5615,49 +5631,7 @@ class TowerDefenseGame {
         localStorage.setItem('currentSlot', '1');
         
         // Initialize fresh permanent stats for new player
-        this.permStats = {
-            totalKills: 0,
-            bonusDamage: 0,
-            bonusHealth: 0,
-            bonusClickDamage: 0,
-            bonusStartGold: 0,
-            gems: 0, // Premium currency
-            // Gem shop upgrades
-            gemUpgrades: {
-                damageMultiplier: 0,
-                healthMultiplier: 0,
-                goldMultiplier: 0,
-                xpMultiplier: 0,
-                critChance: 0,
-                healthRegen: 0
-            },
-            totalDamageDealt: 0,
-            totalClicks: 0,
-            highestWave: 0,
-            totalGamesPlayed: 0,
-            totalGoldEarned: 0,
-            bossesKilled: 0,
-            zombieKills: {
-                normal: 0,
-                strong: 0,
-                runner: 0,
-                tank: 0,
-                exploder: 0,
-                spawner: 0,
-                boss: 0
-            },
-            // Daily rewards
-            dailyRewards: {
-                lastLogin: null,
-                streak: 0,
-                claimed: []
-            },
-            // Themes
-            themes: {
-                unlocked: ['classic'], // Classic is always unlocked
-                current: 'classic'
-            }
-        };
+        this.permStats = this.getDefaultPermanentStats();
         this.savePermanentStats();
         
         // Initialize achievements for new player
@@ -5691,7 +5665,7 @@ class TowerDefenseGame {
     
     loadDailyChallenges() {
         const today = new Date().toDateString();
-        const saved = localStorage.getItem(`dailyChallenges_slot${this.currentSlot}`);
+        const saved = this.readStorageJSON(`dailyChallenges_slot${this.currentSlot}`);
         
         // Define the challenge templates with check functions
         const challengeTemplates = [
@@ -5727,10 +5701,10 @@ class TowerDefenseGame {
             }
         ];
         
-        if (saved) {
-            const data = JSON.parse(saved);
+        if (saved && typeof saved === 'object') {
+            const data = saved;
             // Check if challenges are from today
-            if (data.date === today) {
+            if (data.date === today && Array.isArray(data.challenges) && data.challenges.length === challengeTemplates.length) {
                 // Restore challenges and add check functions back
                 this.dailyChallenges = data.challenges.map((savedChallenge, index) => {
                     return {
@@ -5777,10 +5751,14 @@ class TowerDefenseGame {
     // ==========================================
     
     loadLeaderboards() {
-        const saved = localStorage.getItem(`leaderboards_slot${this.currentSlot}`);
-        
-        if (saved) {
-            this.leaderboards = JSON.parse(saved);
+        const saved = this.readStorageJSON(`leaderboards_slot${this.currentSlot}`);
+
+        if (saved && typeof saved === 'object') {
+            this.leaderboards = {
+                highestWave: Array.isArray(saved.highestWave) ? saved.highestWave : [],
+                mostKills: Array.isArray(saved.mostKills) ? saved.mostKills : [],
+                fastestToWave20: Array.isArray(saved.fastestToWave20) ? saved.fastestToWave20 : []
+            };
         } else {
             this.leaderboards = {
                 highestWave: [],
@@ -5845,20 +5823,27 @@ class TowerDefenseGame {
     // ==========================================
     
     loadSettings() {
-        const saved = localStorage.getItem('gameSettings');
-        
-        if (saved) {
-            this.settings = JSON.parse(saved);
-        } else {
-            this.settings = {
-                volume: 50,
-                soundEnabled: true,
-                musicEnabled: false,
-                graphicsQuality: 'medium',
-                particlesEnabled: true,
-                screenShakeEnabled: true
-            };
+        const defaults = {
+            volume: 50,
+            soundEnabled: true,
+            musicEnabled: false,
+            graphicsQuality: 'medium',
+            particlesEnabled: true,
+            screenShakeEnabled: true
+        };
+        const saved = this.readStorageJSON('gameSettings');
+
+        this.settings = (saved && typeof saved === 'object')
+            ? { ...defaults, ...saved }
+            : defaults;
+        this.settings.volume = Math.max(0, Math.min(100, this.toFiniteNumber(this.settings.volume, defaults.volume)));
+        if (!['low', 'medium', 'high'].includes(this.settings.graphicsQuality)) {
+            this.settings.graphicsQuality = defaults.graphicsQuality;
         }
+        this.settings.soundEnabled = this.settings.soundEnabled !== false;
+        this.settings.musicEnabled = this.settings.musicEnabled === true;
+        this.settings.particlesEnabled = this.settings.particlesEnabled !== false;
+        this.settings.screenShakeEnabled = this.settings.screenShakeEnabled !== false;
         
         // Apply settings
         this.applySettingsToGame();
